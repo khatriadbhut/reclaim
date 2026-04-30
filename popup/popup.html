@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Reclaim</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0d0d;
+      --surface:   #161616;
+      --border:    #2a2a2a;
+      --accent:    #00e5a0;
+      --accent-dim:#00e5a025;
+      --text:      #f0f0f0;
+      --muted:     #666;
+      --red:       #ff4d4d;
+      --yellow:    #ffd166;
+      --blue:      #4d9fff;
+      --purple:    #b57bee;
+    }
+
+    body {
+      width: 340px;
+      min-height: 480px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      overflow-x: hidden;
+    }
+
+    /* Header */
+    .header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: var(--accent);
+    }
+
+    .logo span {
+      color: var(--text);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 8px var(--accent);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* Earnings hero */
+    .earnings-block {
+      padding: 20px 20px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .earnings-label {
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      margin-bottom: 6px;
+    }
+
+    .earnings-amount {
+      font-size: 38px;
+      font-weight: 800;
+      color: var(--accent);
+      letter-spacing: -2px;
+      line-height: 1;
+    }
+
+    .earnings-amount .cents {
+      font-size: 20px;
+      font-weight: 600;
+      opacity: 0.7;
+    }
+
+    .earnings-sub {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      margin-top: 6px;
+    }
+
+    /* Today's stats */
+    .section {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-title {
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      margin-bottom: 12px;
+    }
+
+    /* Category bars */
+    .category-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .category-row {
+      display: grid;
+      grid-template-columns: 80px 1fr 52px;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .category-name {
+      font-size: 11px;
+      color: var(--text);
+      font-family: 'DM Mono', monospace;
+      text-transform: capitalize;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .bar-track {
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.6s ease;
+    }
+
+    .category-time {
+      font-size: 10px;
+      color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      text-align: right;
+    }
+
+    /* Category colors */
+    .cat-shopping   { background: var(--accent); }
+    .cat-social     { background: var(--purple); }
+    .cat-news       { background: var(--blue); }
+    .cat-finance    { background: var(--yellow); }
+    .cat-entertainment { background: var(--red); }
+    .cat-education  { background: #4dffb5; }
+    .cat-health     { background: #ff9f4d; }
+    .cat-travel     { background: #4dd4ff; }
+    .cat-technology { background: #c4ff4d; }
+    .cat-other      { background: var(--muted); }
+
+    /* AI insight */
+    .insight-box {
+      background: var(--accent-dim);
+      border: 1px solid #00e5a030;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #c0fff0;
+      font-family: 'DM Mono', monospace;
+      min-height: 56px;
+    }
+
+    .insight-box.loading {
+      color: var(--muted);
+      animation: shimmer 1.5s infinite;
+    }
+
+    @keyframes shimmer {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    /* Footer */
+    .footer {
+      padding: 12px 20px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 9px 0;
+      border-radius: 6px;
+      font-size: 11px;
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.85; }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #000;
+    }
+
+    .btn-ghost {
+      background: var(--surface);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    .empty-state {
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      font-family: 'DM Mono', monospace;
+      padding: 16px 0;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="logo">re<span>claim</span></div>
+    <div class="status-dot" id="statusDot"></div>
+  </div>
+
+  <div class="earnings-block">
+    <div class="earnings-label">Total Earned</div>
+    <div class="earnings-amount" id="totalEarnings">$0<span class="cents">.00</span></div>
+    <div class="earnings-sub" id="todayEarnings">today: $0.00</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Today's Browsing</div>
+    <div class="category-list" id="categoryList">
+      <div class="empty-state">start browsing to see your data</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">AI Insight</div>
+    <div class="insight-box loading" id="insightBox">analysing your browsing patterns...</div>
+  </div>
+
+  <div class="footer">
+    <button class="btn btn-primary" id="dashboardBtn">Dashboard</button>
+    <button class="btn btn-ghost" id="settingsBtn">Settings</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

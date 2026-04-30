@@ -1,0 +1,30 @@
+# Environment variables - NEVER commit these
+.env
+.env.local
+.env.production
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Build outputs
+dist/
+build/
+
+# Logs
+*.log
+
+# Extension packed file
+*.crx
+*.pem
