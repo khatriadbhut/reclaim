@@ -6,7 +6,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const app = express();
 const PORT = process.env.PORT || 3000;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
 app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
@@ -42,7 +42,6 @@ const KNOWN_DOMAINS = {
   "booking.com": "travel", "irctc.co.in": "travel", "uber.com": "travel"
 };
 
-// Smart fallback insights based on top category
 const FALLBACK_INSIGHTS = {
   shopping: "Your shopping behavior is valuable — brands pay a premium to understand cross-site purchase intent. Today's data has been packaged for retail advertisers.",
   social: "Social browsing patterns reveal content preferences advertisers can't get anywhere else. Your cross-platform behavior is worth more than any single app knows.",
@@ -68,7 +67,8 @@ async function getCategory(domain, title) {
     const category = VALID_CATEGORIES.includes(raw) ? raw : "other";
     categoryCache[domain] = { category, cachedAt: Date.now() };
     return { category, source: "gemini" };
-  } catch {
+  } catch (err) {
+    console.error("Gemini categorize error:", err.message);
     return { category: "other", source: "fallback" };
   }
 }
@@ -84,14 +84,14 @@ app.post("/api/insight", async (req, res) => {
   const { summary } = req.body;
   if (!summary) return res.status(400).json({ error: "summary is required" });
 
-  // Find top category from summary
   const topCat = summary.split(",")[0].trim().split(":")[0].trim().toLowerCase();
 
   try {
     const prompt = `You are an AI for Reclaim, an app that pays users for their browsing data.\nUser browsing today: ${summary}\nWrite ONE short useful insight (max 2 sentences). Be specific, conversational, no emojis.`;
     const result = await model.generateContent(prompt);
     return res.json({ insight: result.response.text().trim(), source: "gemini" });
-  } catch {
+  } catch (err) {
+    console.error("Gemini insight error:", err.message);
     const fallback = FALLBACK_INSIGHTS[topCat] || FALLBACK_INSIGHTS.other;
     return res.json({ insight: fallback, source: "fallback" });
   }
