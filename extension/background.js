@@ -5,14 +5,12 @@
 
 const BACKEND_URL = "http://localhost:3000";
 
-// Fallback earnings rates (backend returns the real rate via /api/extract)
 const FALLBACK_EARNINGS_RATE = {
   shopping: 0.05, finance: 0.06, health: 0.05, travel: 0.04,
   social: 0.02, news: 0.02, entertainment: 0.02, technology: 0.02,
   education: 0.01, food: 0.02, realestate: 0.08, jobs: 0.03, other: 0.005
 };
 
-// Generate or retrieve persistent user ID
 async function getUserId() {
   const result = await chrome.storage.local.get("userId");
   if (result.userId) return result.userId;
@@ -34,7 +32,6 @@ function getTodayKey() {
   return new Date().toISOString().split("T")[0];
 }
 
-// Extract structured data from domain + title via backend
 async function extractData(domain, title) {
   const cacheKey = `ext_${domain}_${(title || "").slice(0, 50)}`;
   const cached = await chrome.storage.local.get(cacheKey);
@@ -53,8 +50,11 @@ async function extractData(domain, title) {
   } catch {
     return {
       category: "other",
-      brand: null, product: null, intent_score: 3,
-      keywords: [], earnings_rate: FALLBACK_EARNINGS_RATE.other
+      brand: null,
+      product: null,
+      intent_score: 3,
+      keywords: [],
+      earnings_rate: FALLBACK_EARNINGS_RATE.other
     };
   }
 }
@@ -87,8 +87,8 @@ async function saveSession(url, title, durationSeconds, extraData = {}) {
       earned: 0,
       brand: extracted.brand || null,
       product: extracted.product || null,
-      intent_score: extracted.intent_score || 3,
-      keywords: extracted.keywords || [],
+      intent_score: 3,
+      keywords: [],
       price_range: extracted.price_range || null,
       search_type: extracted.search_type || null,
       searchQueries: [],
@@ -98,25 +98,36 @@ async function saveSession(url, title, durationSeconds, extraData = {}) {
   }
 
   const session = sessions[todayKey][domain];
+
+  // Normalize — fix any legacy/corrupted data from older versions
+  session.keywords = Array.isArray(session.keywords) ? session.keywords : [];
+  session.searchQueries = Array.isArray(session.searchQueries) ? session.searchQueries : [];
+  session.pricesFound = Array.isArray(session.pricesFound) ? session.pricesFound : [];
+  session.maxScrollDepth = typeof session.maxScrollDepth === "number" ? session.maxScrollDepth : 0;
+  session.intent_score = typeof session.intent_score === "number" ? session.intent_score : 3;
+
   session.totalSeconds += durationSeconds;
   session.visits += 1;
   session.earned += earned;
 
-  // Null-guarded updates
+  // Update from extract
   if (extracted.brand) session.brand = extracted.brand;
-  if (extracted.intent_score) session.intent_score = Math.max(session.intent_score || 3, extracted.intent_score);
-  if (extracted.keywords?.length) {
-    session.keywords = [...new Set([...(session.keywords || []), ...extracted.keywords])];
+  if (typeof extracted.intent_score === "number") {
+    session.intent_score = Math.max(session.intent_score, extracted.intent_score);
+  }
+  if (Array.isArray(extracted.keywords) && extracted.keywords.length) {
+    session.keywords = [...new Set([...session.keywords, ...extracted.keywords])];
   }
 
-  if (extraData.searchQuery && !(session.searchQueries || []).includes(extraData.searchQuery)) {
-    session.searchQueries = [...(session.searchQueries || []), extraData.searchQuery];
+  // Merge content script data
+  if (extraData.searchQuery && !session.searchQueries.includes(extraData.searchQuery)) {
+    session.searchQueries.push(extraData.searchQuery);
   }
-  if (extraData.scrollDepth) {
-    session.maxScrollDepth = Math.max(session.maxScrollDepth || 0, extraData.scrollDepth);
+  if (typeof extraData.scrollDepth === "number") {
+    session.maxScrollDepth = Math.max(session.maxScrollDepth, extraData.scrollDepth);
   }
-  if (extraData.prices?.length) {
-    session.pricesFound = [...new Set([...(session.pricesFound || []), ...extraData.prices])];
+  if (Array.isArray(extraData.prices) && extraData.prices.length) {
+    session.pricesFound = [...new Set([...session.pricesFound, ...extraData.prices])];
   }
 
   await chrome.storage.local.set({
@@ -126,7 +137,6 @@ async function saveSession(url, title, durationSeconds, extraData = {}) {
   });
 }
 
-// Sync all data to backend
 async function syncToBackend() {
   try {
     const userId = await getUserId();
@@ -153,7 +163,6 @@ async function syncToBackend() {
   }
 }
 
-// Active tab tracking
 let activeTabId = null;
 let activeTabUrl = null;
 let activeTabTitle = null;
@@ -177,7 +186,10 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
     activeTabTitle = tab.title;
     activeTabStart = Date.now();
   } catch {
-    activeTabId = null; activeTabUrl = null; activeTabTitle = null; activeTabStart = null;
+    activeTabId = null;
+    activeTabUrl = null;
+    activeTabTitle = null;
+    activeTabStart = null;
   }
 });
 
@@ -227,7 +239,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
-// Listen for messages from content.js
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.type === "CONTENT_DATA") {
     const domain = getDomain(sender.tab?.url || "");
@@ -235,13 +246,13 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     if (!pendingContentData[domain]) pendingContentData[domain] = {};
 
     if (message.searchQuery) pendingContentData[domain].searchQuery = message.searchQuery;
-    if (message.scrollDepth) {
+    if (typeof message.scrollDepth === "number") {
       pendingContentData[domain].scrollDepth = Math.max(
         pendingContentData[domain].scrollDepth || 0,
         message.scrollDepth
       );
     }
-    if (message.prices?.length) {
+    if (Array.isArray(message.prices) && message.prices.length) {
       pendingContentData[domain].prices = [
         ...new Set([...(pendingContentData[domain].prices || []), ...message.prices])
       ];
