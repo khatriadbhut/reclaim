@@ -1,6 +1,6 @@
 # Reclaim — Project Status Document
 > Last updated: 2026-05-02
-> Version: 0.3.0
+> Version: 0.7.0
 > Repo: https://github.com/khatriadbhut/reclaim
 
 ---
@@ -46,8 +46,12 @@ reclaim/
 │   ├── popup/
 │   │   ├── popup.html     # Extension popup UI
 │   │   └── popup.js       # Popup logic, reads chrome.storage, calls /api/insight
-│   ├── background.js      # Service worker, tab tracking, data collection, /api/extract
-│   └── manifest.json      # Manifest v3, permissions: tabs, storage, alarms, activeTab
+│   ├── onboarding/
+│   │   ├── onboarding.html  # First-run onboarding page (planned)
+│   │   └── onboarding.js    # Demographic capture + geolocation + ipapi fallback (planned)
+│   ├── background.js      # Service worker v3 — tab tracking, /api/extract, value-based earnings, /api/sync
+│   ├── content.js         # Content script — price extraction, breadcrumbs, scroll depth, search queries, page type
+│   └── manifest.json      # Manifest v3, permissions: tabs, storage, alarms, activeTab, scripting
 └── dashboard/
     ├── index.html          # Loads Syne + DM Mono fonts, Vite entry
     ├── src/
@@ -72,17 +76,23 @@ reclaim/
   "category": "shopping",
   "extracted": {
     "brand": "Apple",
+    "product": "iPhone 15 Pro",
     "product_type": "smartphone",
     "price_range": "premium",
     "intent_score": 8,
-    "keywords": ["iPhone 15 Pro", "256GB", "Natural Titanium"]
+    "keywords": ["iPhone 15 Pro", "256GB", "Natural Titanium"],
+    "search_type": "product_search"
   },
-  "context": {
-    "time_of_day": "evening",
-    "day_of_week": "Saturday",
-    "device": "Mac",
-    "city": "Roorkee",
-    "country": "India"
+  "content_signals": {
+    "pageType": "product",
+    "deviceType": "desktop",
+    "timeOfDay": "evening",
+    "visitHour": 21,
+    "searchQuery": "iphone 15 pro price india",
+    "maxScrollDepth": 74,
+    "pricesFound": [{ "price": "₹134900", "currency": "INR", "brand": "Apple" }],
+    "breadcrumbs": ["Electronics", "Mobiles", "Apple"],
+    "pageTypes": ["product"]
   }
 }
 ```
@@ -95,7 +105,7 @@ reclaim/
   "age_range": "18-24",
   "gender": "M",
   "location": { "city": "Roorkee", "state": "Uttarakhand", "country": "India" },
-  "device": "Mac",
+  "device": "desktop",
   "week_summary": {
     "total_browsing_hours": 12.4,
     "top_categories": ["technology", "shopping", "entertainment"],
@@ -109,10 +119,10 @@ reclaim/
     "active_days": ["Friday", "Saturday"]
   },
   "segments": [
-    "high_intent_electronics",
-    "night_owl_browser",
-    "premium_brand_researcher",
-    "tech_early_adopter"
+    "high_intent_shopper",
+    "night_owl_shopper",
+    "tech_early_adopter",
+    "finance_decision_maker"
   ],
   "estimated_value_usd": 0.34
 }
@@ -128,13 +138,7 @@ reclaim/
 
 **Internal storage:** Always JSON. CSV and PDF are generated at export time.
 
-### Three Data Package Types (Company Dashboard)
-
-1. **Audience Segment CSV** — anonymized user IDs + behavioral signals for ad platform upload
-2. **Market Research Report** — aggregated trends, brand rankings, purchase journey insights
-3. **Intent Signal API** — real-time feed of high-intent behavioral triggers
-
-### How Companies Use the Data (AdTech Flow)
+### AdTech Flow
 
 Companies don't need users' IP addresses or names. The flow works via:
 - **Cookie/Device ID matching** — browser already stores advertiser cookies (Google, Meta). Identity resolution services (LiveRamp, The Trade Desk) bridge Reclaim's user IDs to ad platform IDs without exposing raw personal data.
@@ -145,110 +149,237 @@ Companies don't need users' IP addresses or names. The flow works via:
 
 ## What Has Been Done
 
-### 1. Browser Extension
-- **Tab tracking** — `chrome.tabs.onActivated`, `onUpdated`, `windows.onFocusChanged` listeners track active tab and duration
-- **Periodic saves** — Chrome alarm fires every 30 seconds, saves session data to `chrome.storage.local`
-- **Domain categorization** — `background.js` calls `/api/categorize` for each new domain; result cached in `chrome.storage.local` for 24 hours
-- **Earnings calculation** — per-category earnings rates applied to time spent (finance: $0.10/hr, shopping: $0.08/hr, health: $0.07/hr, travel: $0.06/hr, social: $0.04/hr, news/entertainment: $0.03/hr, education/technology: $0.02-0.03/hr, other: $0.01/hr)
-- **Data structure** — sessions stored by date key (`YYYY-MM-DD`) → domain → `{ domain, category, totalSeconds, visits, earned }`
-- **Manifest v3** — service worker background, host permissions for `<all_urls>` and `http://localhost:3000/*`
-- **Page title capture** — `background.js` captures `tab.title` alongside URL for richer categorization
+### 1. Browser Extension — Content Script (`content.js`) ✅ NEW
+A production-grade content script injected into every page via Manifest v3 `content_scripts`. Runs at `document_idle`.
 
-### 2. Extension Popup UI
+- **Device type detection** — UA-based: mobile / tablet / desktop
+- **Time of day detection** — morning / afternoon / evening / night + raw `visitHour` (0–23)
+- **Page type detection** — regex on URL/path: checkout, product, search, category, article, job_listing, property_listing, travel_booking, homepage, other
+- **Search query capture** — 30+ domain-specific URL param mappings (Google `q`, Amazon `k`, Flipkart `q`, Zomato `q`, Naukri `k`, MagicBricks `q`, etc.)
+- **Price extraction (5-layer cascade):**
+  1. JSON-LD schema.org Product (Google Shopping standard)
+  2. Open Graph / meta tags (`product:price:amount`, `og:price:amount`)
+  3. Microdata (`itemtype*="schema.org/Product"`)
+  4. Site-specific CSS selectors (Amazon, Flipkart, Myntra, Nykaa, Meesho, Ajio, Snapdeal)
+  5. Regex fallback (`₹`, `$`, `€` patterns in body text)
+- **Breadcrumb extraction** — JSON-LD BreadcrumbList first, then `nav[aria-label*="breadcrumb"]` fallback
+- **Scroll depth tracking** — live tracking with 2-second debounce, sends on scroll / page unload / every 30 seconds
+- **Messaging** — sends all signals to `background.js` via `chrome.runtime.sendMessage({ type: "CONTENT_DATA", ... })`
+
+### 2. Browser Extension — Background Service Worker (`background.js` v3) ✅ UPGRADED
+- **Tab tracking** — `chrome.tabs.onActivated`, `onUpdated`, `windows.onFocusChanged` save session on tab switch
+- **Periodic saves** — alarm every 30 seconds
+- **Structured extraction** — calls `POST /api/extract` (not `/api/categorize`) for domain + title; 24hr cache in `chrome.storage.local` keyed by `ext_{domain}_{title_prefix}` — persists across Chrome restarts to prevent Gemini quota burn
+- **Content script integration** — listens for `CONTENT_DATA` messages, accumulates into `pendingContentData[domain]`, merges on next `saveSession`
+- **Value-based earnings model** (see Earnings Rate Card below)
+- **Backend sync** — `POST /api/sync` called every 5 minutes via alarm with full sessions + totalEarnings + profile
+- **Session data stored per domain per day:**
+  - `domain`, `category`, `totalSeconds`, `visits`, `earned`
+  - `brand`, `product`, `product_type`, `price_range`, `intent_score`, `keywords`, `search_type`
+  - `location`, `job_title`, `travel_route`, `property_type`
+  - `searchQueries[]`, `maxScrollDepth`, `pricesFound[]`, `breadcrumbs[]`, `pageTypes[]`
+  - `deviceType`, `timeOfDay`, `visitHours[]`
+- **Legacy data normalization** — handles old session objects missing new fields (arrays coerced, numbers defaulted)
+- **Premium brands list** — 18 brands (Apple, BMW, Sony, Samsung, Nike, etc.) flagged for bonus earnings
+
+### 3. Extension Manifest (`manifest.json`) ✅ UPDATED
+- Added `scripting` permission
+- Added `content_scripts` block: `content.js` injected at `document_idle` on `<all_urls>`
+
+### 4. Extension Popup UI
 - Shows **total earnings** (all time) and **today's earnings**
-- **Category bars** — sorted by time, color-coded per category (social=purple, tech=yellow-green, shopping=green, entertainment=red, etc.)
-- **AI Insight box** — calls `/api/insight` with today's category summary; 10-minute client-side cache; falls back to category-specific hardcoded messages if backend down
+- **Category bars** — sorted by time, color-coded per category
+- **AI Insight box** — calls `/api/insight` with today's category summary; 10-minute client-side cache
 - **Dashboard button** — opens `localhost:5173`
-- **Settings button** — opens `localhost:5173/settings` (page not built yet)
-- Fonts: Syne (headings/logo) + DM Mono (monospace data)
-- Accent color: `#00e5a0`
+- Fonts: Syne + DM Mono | Accent: `#00e5a0`
 
-### 3. Backend (Node.js/Express)
-- **`POST /api/categorize`** — takes `{ domain, title }`, checks 60+ known domains list first (no API call), then calls Gemini for unknown domains, caches in memory for 24hrs
-- **`POST /api/insight`** — takes `{ summary }` (category:minutes string), calls Gemini for a 2-sentence personalized insight; falls back to hardcoded category-specific messages on rate limit/error
-- **`GET /api/health`** — returns status and cache size
-- **Known domains list** — 80+ hardcoded popular domains (Amazon, Instagram, YouTube, Netflix, Zerodha, etc.) to avoid unnecessary Gemini API calls
-- **CORS** — enabled for all origins (`*`)
-- **Gemini model** — `gemini-2.5-flash` (fallback: `gemini-2.0-flash`)
-- **Rate limit handling** — graceful fallback to hardcoded responses on 429/503 errors
-- **In-memory storage** — currently stores data in process memory (intentional for demo; PostgreSQL planned post-funding)
-
-### 4. Extension Icons
+### 5. Extension Icons
 - Logo: coin with dollar sign + padlock, outline style, `#00ffaa` on dark background
 - Sizes: 16×16, 48×48, 128×128 PNG
 
-### 5. Dashboard (React + Vite)
-- **Overview tab** — total earnings card, top category card, sites visited count, AI insight card, today's category breakdown with bars and earned amounts
-- **Browsing tab** — table of top domains with category pill, time, visits, earned
-- **Insights tab** — AI insight card with refresh button, data value breakdown by category
+### 6. Backend (`server.js`) ✅ UPGRADED
+
+All endpoints:
+
+| Method | Endpoint | Status | Description |
+|---|---|---|---|
+| POST | `/api/categorize` | ✅ | Legacy — domain + title → category only. Kept for backward compat. |
+| POST | `/api/extract` | ✅ NEW | Full structured extraction via Gemini: category, brand, product, intent_score, keywords, price_range, search_type, location, job_title, travel_route, property_type. MD5-keyed in-memory cache. |
+| POST | `/api/sync` | ✅ NEW | Receives full sessions + totalEarnings + profile from extension. Stored in-memory. |
+| GET | `/api/profile/:userId` | ✅ NEW | Returns aggregated behavioral profile: topCategories, topBrands, segments, peakHour, isNightOwl, totalBrowsingHours, searchQueries, deviceType |
+| GET | `/api/packages` | ✅ NEW | Returns 6 advertiser data packages with signals, dataFields, sampleData (3 rows each), pricing, formats |
+| POST | `/api/insight` | ✅ | Gemini-generated 2-sentence insight from browsing summary. Category fallbacks on rate limit. |
+| GET | `/api/health` | ✅ | Cache sizes + user count |
+
+**Auto-assigned audience segments** (in `/api/profile`):
+- `high_intent_shopper` — shopping > 30 min
+- `finance_decision_maker` — finance > 15 min
+- `tech_early_adopter` — technology > 30 min
+- `property_seeker` — realestate > 10 min
+- `job_seeker` — jobs > 10 min
+- `travel_planner` — travel > 10 min
+- `night_owl_shopper` — isNightOwl + shopping > 10 min
+
+**6 Advertiser Data Packages** (from `/api/packages`):
+
+| Package | Price | strongerAfterOnboarding |
+|---|---|---|
+| High Intent Shoppers | $299 | No |
+| Cross-Platform Behavioral Profile | $399 | No |
+| Finance Decision Makers | $499 | Yes — occupation 3x value lift |
+| Tech Early Adopters | $199 | No |
+| Real Estate Prospects | $449 | Yes — city makes it geo-targeted |
+| Night Owl Impulse Buyers | $179 | No |
+
+### 7. Dashboard (React + Vite)
+- **Overview tab** — total earnings, top category, sites visited, AI insight, today's category breakdown
+- **Browsing tab** — domain table with category pill, time, visits, earned
+- **Insights tab** — AI insight card, data value breakdown by category
 - **Wallet tab** — balance display, MetaMask connect button, withdraw placeholder
 - Sidebar navigation with status dot
-- Matches extension aesthetic: `#0d0d0d` background, `#00e5a0` accent, Syne + DM Mono fonts
-- **Currently using demo/hardcoded data** — not yet reading from extension storage or backend
+- Styling: `#0d0d0d` background, `#00e5a0` accent, Syne + DM Mono fonts
+- **⚠️ Currently using demo/hardcoded data** — not yet connected to backend or extension storage
 
 ---
 
 ## What Has To Be Done (Priority Order)
 
-### Priority 1 — Upgrade Data Extraction (domain + title → structured JSON)
+### Priority 1 — Onboarding Flow ⭐ BLOCKS PACKAGE VALUE
 **Status:** Not started
-**What:** Replace `/api/categorize` with `/api/extract` that uses Gemini to pull structured data from page title. Returns category + brand + product type + intent score + keywords.
-**Why:** Page title is the biggest quick win for data quality. "Apple iPhone 15 Pro 256GB - Amazon.in" tells brand, product, price range, intent. This makes the data 10x more valuable.
-**Files to change:**
-- `backend/server.js` — add `POST /api/extract` endpoint
-- `extension/background.js` — call `/api/extract` instead of `/api/categorize`, store richer data object
+**Why first:** Every package has null demographic fields until onboarding runs. Finance Decision Makers and Real Estate Prospects are worth 3–10x more with occupation + city. This is the single highest-leverage task before the company dashboard launch.
+
+**Flow:**
+1. `chrome.runtime.onInstalled` fires → background.js opens `onboarding.html` in a new tab
+2. **Step 1 — T&C / Consent** → user must click "I Agree" to proceed — no passive acceptance
+3. **Step 2 — Demographics** → age range, gender, occupation
+4. **Step 3 — Location** → geolocation request with ipapi fallback
+5. On complete → data saved to `chrome.storage.local` → synced to backend via `/api/sync`
+
+**T&C / Consent screen must disclose:**
+- What is collected: browsing behavior (domains, time spent, categories, brands, search queries), demographics you provide, and approximate location
+- How it's used: anonymized, aggregated into audience segments, sold to advertisers and market researchers
+- Location disclosure: "We use your city-level location — from GPS if granted, or estimated from your IP address if not — to increase your data's value and your earnings"
+- What you get: a share of every data sale, paid to your Reclaim wallet
+- Link to full Terms of Service (placeholder page is fine for demo)
+
+**Why this matters:** This consent screen is Reclaim's core legal and ethical differentiator. Meta, Google, and Instagram do all of the above silently. Reclaim shows users exactly what's being collected and pays them for it. This screen is a feature — use it in the YC demo narrative.
+
+**Fields collected:**
+
+| Field | Input Type | Values |
+|---|---|---|
+| `age_range` | Radio | Under 18 / 18–24 / 25–34 / 35–44 / 45+ |
+| `gender` | Radio | Male / Female / Other / Prefer not to say |
+| `occupation` | Dropdown | Student / Salaried / Business Owner / Freelancer / Other |
+
+**Location strategy:**
+1. Request `navigator.geolocation` with a clear "this helps us pay you more" explanation
+2. If granted → use coords → call `https://ipapi.co/json/` with coords to reverse geocode → extract `city`, `region`, `country`
+3. If denied → silently call `https://ipapi.co/json/` (IP-based) → extract same fields, no second prompt to user
+4. Store as `userLocation: { city, region, country, source: "gps" | "ip" }`
+
+**Storage schema (chrome.storage.local):**
+```json
+{
+  "userProfile": {
+    "age_range": "18-24",
+    "gender": "M",
+    "occupation": "Student",
+    "onboardingComplete": true,
+    "onboardingDate": "2026-05-02"
+  },
+  "userLocation": {
+    "city": "Roorkee",
+    "region": "Uttarakhand",
+    "country": "India",
+    "source": "ip"
+  }
+}
+```
+
+**What changes after onboarding:**
+- `/api/sync` already sends `profile` + `location` to backend — no backend changes needed
+- `/api/profile/:userId` already returns this data — no backend changes needed
+- Package exports will now include real city + occupation instead of null
+
+**Files to add/change:**
+- `extension/onboarding/onboarding.html` — styled form matching extension aesthetic (`#0d0d0d`, `#00e5a0`, Syne + DM Mono)
+- `extension/onboarding/onboarding.js` — form logic, geolocation, ipapi call, storage write
+- `extension/background.js` — add `chrome.runtime.onInstalled` listener, check `onboardingComplete` flag before opening
 
 ---
 
-### Priority 2 — Connect Dashboard to Real Data
-**Status:** Not started
-**What:** Extension pushes session data to backend on every periodic save. Backend stores in memory. Dashboard fetches from backend instead of demo data.
-**Files to change:**
-- `extension/background.js` — add POST to `/api/sync` after every `saveSession`
-- `backend/server.js` — add `POST /api/sync` to store data, `GET /api/data` to return it, `GET /api/profile` to return aggregated user profile
-- `dashboard/src/App.jsx` — replace demo data with `fetch` calls to `/api/profile`
+### Priority 2 — Company Dashboard + Data Selling ⭐ CORE REVENUE FEATURE
+**Status:** Backend `/api/packages` done ✅ — everything else not started
 
----
+**What needs to be built:**
 
-### Priority 3 — Company Dashboard
-**Status:** Not started
-**What:** Separate page (route `/company`) showing 3 buyable data packages with preview, pricing, and simulated purchase + CSV/JSON/PDF download.
-**Package types:**
-1. High Intent Electronics Shoppers — CSV for ad activation — $299
-2. Finance Decision Makers — Market Research Report PDF — $499
-3. Entertainment Early Adopters — Intent Signal API — $199
+#### 2a. Company Dashboard Frontend (`Company.jsx`)
+A separate route (`/company`) — the storefront where companies browse and buy packages.
+
+**UI sections:**
+- Header: "Buy Audience Data" with tagline
+- Package cards grid — each card shows: name, tagline, userCount, price, signals list, formats, `strongerAfterOnboarding` badge if applicable
+- Each card has a "Preview Data" button → opens modal with the 3 sampleData rows as a table
+- "Purchase" button → triggers purchase flow
+- Post-purchase: download button for CSV or JSON
+
 **Files to add:**
-- `dashboard/src/Company.jsx` — company-facing page
-- `backend/server.js` — `GET /api/packages`, `POST /api/purchase` (simulated)
-- CSV/JSON export generation logic in backend
+- `dashboard/src/Company.jsx`
+- `dashboard/src/App.jsx` — add `/company` route
 
----
+#### 2b. Real Package Data Export (`/api/purchase`)
+When a company purchases a package, they should download **real aggregated user data** from the system, not hardcoded samples.
 
-### Priority 4 — Onboarding Flow
-**Status:** Not started
-**What:** First-run experience when extension is installed. Consent form, data collection opt-in, AI suggestion opt-in. Critical for legal defensibility and YC demo narrative.
-**Files to add:**
-- `extension/onboarding/onboarding.html` + `onboarding.js`
-- `extension/background.js` — detect first install via `chrome.runtime.onInstalled`, open onboarding tab
+**New backend endpoint: `POST /api/purchase`**
+```json
+Request:  { "packageId": "finance_decision_makers", "format": "csv" }
+Response: file download (CSV or JSON)
+```
 
----
+**How each package maps to real data (what fields to pull from stored sessions):**
 
-### Priority 5 — Historical Data & Charts
-**Status:** Not started
-**What:** Weekly/monthly earnings trend chart on dashboard. Per-day breakdown.
+**High Intent Shoppers** — filter users where `shopping` sessions exist with `intent_score >= 7`. Export: `user_id`, `intent_score` (max), `top_brands` (from session.brand), `search_queries` (from session.searchQueries), `prices_viewed` (from session.pricesFound), `breadcrumbs`, `page_types` (from session.pageTypes), `scroll_depth` (session.maxScrollDepth), `visit_frequency` (session.visits), `age_range`, `gender`, `city`, `device`
+
+**Cross-Platform Behavioral Profile** — all users with 3+ categories browsed. Export: `user_id`, `category_distribution` (% breakdown from sessions), `top_brands`, `all_search_queries`, `active_hours` (from visitHours), `peak_hour`, `device`, `avg_scroll_depth`, `total_browsing_hours`, `age_range`, `gender`, `occupation`, `city`
+
+**Finance Decision Makers** — filter users where `finance` sessions exist with totalSeconds > 900. Export: `user_id`, `finance_platforms_visited` (domains in finance category), `search_queries`, `intent_score`, `finance_products_researched` (keywords from finance sessions), `visit_frequency`, `age_range`, `gender`, `occupation`, `city`, `device`
+
+**Tech Early Adopters** — filter users where `technology` sessions > 1800 seconds. Export: `user_id`, `tech_tools_used` (domains in tech category), `ai_tools_used` (claude.ai, openai.com etc from sessions), `search_queries`, `dev_platforms_visited` (github, stackoverflow etc), `tech_browsing_hours`, `device`, `age_range`, `gender`, `occupation`, `city`
+
+**Real Estate Prospects** — filter users with `realestate` sessions. Export: `user_id`, `property_platforms_visited`, `search_queries`, `property_types` (from session.property_type), `locations_searched` (from session.location), `intent_score`, `visit_frequency`, `age_range`, `gender`, `occupation`, `city`, `device`
+
+**Night Owl Impulse Buyers** — filter users where `visitHours` contains hours 22–2 AND shopping/entertainment sessions exist. Export: `user_id`, `peak_shopping_hours` (late-night visitHours), `device`, `late_night_categories`, `late_night_brands`, `late_night_search_queries`, `avg_session_duration_night`, `age_range`, `gender`, `city`
+
 **Files to change:**
-- `backend/server.js` — `/api/data` returns all sessions by date
+- `backend/server.js` — add `POST /api/purchase` with per-package filter + export logic. CSV generation using manual string building (no new dependencies). JSON just `res.json()`.
+
+#### 2c. Live userCount per package
+Currently `userCount` is hardcoded. After `/api/sync` starts receiving real users, the packages endpoint should compute real counts.
+- `backend/server.js` — in `GET /api/packages`, compute `userCount` per package by running the same filters against `userSessions` in memory
+
+---
+
+### Priority 3 — Connect Dashboard to Real Data
+**Status:** Not started
+**What:** Dashboard reads live data from backend instead of hardcoded demo values.
+**Files to change:**
+- `dashboard/src/App.jsx` — replace demo data with `fetch` calls to `GET /api/profile/:userId`
+- `extension/popup/popup.js` — expose `userId` via `chrome.storage.local` so dashboard can read same ID
+**Note:** `/api/sync` and `/api/profile` are already built. This is a frontend-only task.
+
+---
+
+### Priority 4 — Historical Data & Charts
+**Status:** Not started
+**Files to change:**
+- `backend/server.js` — `/api/data/:userId` returns all sessions by date
 - `dashboard/src/App.jsx` — add recharts line/bar chart to overview/insights tab
 
 ---
 
-### Priority 6 — AI Suggestions Feature
+### Priority 5 — AI Suggestions Feature
 **Status:** Not started
-**What:** Cross-site personalized recommendations — the core product differentiator. Uses cross-site browsing profile to give better suggestions than any single-site provider.
-**Details:**
-- Product recommendations across retailers (e.g. "You've been looking at AirPods on Amazon and Flipkart — here's the best deal right now")
-- Personalized news/article feeds based on reading patterns
-- Financial tips based on browsing patterns
 **Files to add:**
 - `backend/server.js` — `POST /api/suggestions` using Gemini with full browsing profile as context
 - `extension/popup/popup.js` — suggestions section in popup
@@ -256,96 +387,76 @@ Companies don't need users' IP addresses or names. The flow works via:
 
 ---
 
-### Priority 7 — User Authentication
-**Status:** Not started
-**What:** Login/signup so data is tied to a specific user. JWT-based. Required before multi-user data persistence makes sense.
-**Note:** Not needed for single-user demo. Build after first real users.
-**Files to add:**
-- `backend/server.js` — `POST /api/auth/register`, `POST /api/auth/login`, JWT middleware
-- `dashboard/src/` — Login.jsx, Register.jsx
-- `extension/background.js` — store and send auth token with API requests
+### Priority 6 — User Authentication
+**Status:** Not started. Not needed for single-user demo.
 
 ---
 
-### Priority 8 — PostgreSQL Database
-**Status:** Not started — intentionally deferred
-**Why deferred:** In-memory storage is sufficient for demo. PostgreSQL adds complexity without demo value. Add post-funding when real users need data persistence.
-**What it will do:** Persist user profiles, session data, transaction logs across server restarts.
-**Files to add when ready:**
-- `backend/db.js` — PostgreSQL connection (pg library)
-- Schema: `users`, `sessions`, `transactions`, `packages` tables
-- `backend/server.js` — replace in-memory maps with DB queries
+### Priority 7 — PostgreSQL Database
+**Status:** Not started — intentionally deferred until post-funding.
 
 ---
 
-### Priority 9 — Blockchain / Wallet Integration
-**Status:** UI placeholder only (Connect Wallet button exists, non-functional)
-**What:** Smart contracts for automated payouts. 80% to users, 20% platform fee. MetaMask + Sepolia testnet for demo simulation.
-**Files to add:**
-- `contracts/` — Solidity smart contracts (escrow, distribution)
-- `backend/server.js` — payment flow endpoints
-- `dashboard/src/App.jsx` — complete wallet tab with MetaMask integration and withdrawal flow
+### Priority 8 — Blockchain / Wallet Integration
+**Status:** UI placeholder only (Connect Wallet button exists, non-functional).
 
 ---
 
-### Priority 10 — Admin Panel
-**Status:** Not started
-**What:** Internal tools for data moderation, compliance checks, user management, AI model monitoring.
-**Needs more research before implementation.**
+### Priority 9 — Admin Panel
+**Status:** Not started. Needs more research before implementation.
 
 ---
 
 ## Known Issues / Technical Debt
 
-| Issue | Location | Priority |
-|---|---|---|
-| Dashboard uses demo data, not real extension data | `dashboard/src/App.jsx` | High |
-| `/api/categorize` returns only category — needs to return full structured extraction | `backend/server.js` | High |
-| Gemini free tier quota exhausted quickly during testing | `backend/server.js` | Medium |
-| No rate limiting on API endpoints — can burn Gemini quota fast | `backend/server.js` | Medium |
-| Settings page (`/settings`) not built | dashboard | Low |
-| No error boundary in React dashboard | `dashboard/src/App.jsx` | Low |
-| Extension doesn't handle offline backend gracefully (shows fallback) | `extension/background.js` | Low |
-| `generate_icons.py` in extension root — should move to `/scripts` | repo structure | Low |
+| Issue | Location | Priority | Status |
+|---|---|---|---|
+| Dashboard uses demo data, not real extension data | `dashboard/src/App.jsx` | High | Open |
+| Settings page (`/settings`) not built | dashboard | Low | Open |
+| No error boundary in React dashboard | `dashboard/src/App.jsx` | Low | Open |
+| No rate limiting on API endpoints — can burn Gemini quota | `backend/server.js` | Medium | Open |
+| `generate_icons.py` in extension root — should move to `/scripts` | repo structure | Low | Open |
+| Extension doesn't handle offline backend gracefully | `extension/background.js` | Low | Open |
+| `/api/categorize` returns only category (no structured data) | `backend/server.js` | High | ✅ Resolved — `/api/extract` added |
+| Gemini quota burst on Chrome restart (no persistent cache) | `extension/background.js` | Medium | ✅ Resolved — 24hr cache in chrome.storage.local |
+| Legacy session data missing new fields | `extension/background.js` | Medium | ✅ Resolved — normalization added |
 
 ---
 
 ## Earnings Rate Card
 
-> ⚠️ **NEEDS UPDATE** — Current rates are flat per-category. Once `/api/extract` is built and returns `intent_score`, `brand`, `price_range`, the earnings model should be updated to value-based (base rate + intent bonus + brand bonus + cross-site bonus). See conversation history for the full revised model.
+### Current Model — Value-Based (live in background.js v3)
 
+**Base Rate (by category, per hour):**
 
-### Base Rate (by category, per hour)
-
-| Category | Base Rate ($/hr) | Why |
-|---|---|---|
-| Finance | $0.06 | Investment/banking intent |
-| Shopping | $0.05 | Purchase intent |
-| Health | $0.05 | Pharma/wellness premium |
-| Travel | $0.04 | Booking intent |
-| Social | $0.02 | Behavioral signals |
-| News | $0.02 | Content patterns |
-| Entertainment | $0.02 | Subscription signals |
-| Technology | $0.02 | B2B signals |
-| Education | $0.01 | EdTech targeting |
-| Other | $0.005 | Minimal value |
-
-### Bonus Multipliers (added on top of base rate)
-
-| Signal | Bonus | Why |
-|---|---|---|
-| Brand extracted from title | +$0.002/hr | Specific brand intent is more valuable |
-| Premium brand (Apple, BMW, Sony etc.) | +$0.003/hr | Premium audience = higher CPM |
-| Intent score 7-10 | +$0.001 × intent_score | High intent = near-purchase signal |
-| Same product seen on 3+ sites in one day | +$0.005/hr | Cross-site comparison = highest intent |
-| Product type extracted | +$0.001/hr | Structured data adds value |
-
-### Example Earnings
-
-| Behavior | Earnings |
+| Category | Base Rate ($/hr) |
 |---|---|
-| Scrolling Amazon homepage (30 min) | ~$0.025 |
-| Viewing iPhone product page (10
+| Real Estate | $0.08 |
+| Finance | $0.06 |
+| Shopping | $0.05 |
+| Health | $0.05 |
+| Travel | $0.04 |
+| Social | $0.02 |
+| News | $0.02 |
+| Entertainment | $0.02 |
+| Technology | $0.02 |
+| Food | $0.02 |
+| Jobs | $0.03 |
+| Education | $0.01 |
+| Other | $0.005 |
+
+**Bonus Multipliers (added on top of base):**
+
+| Signal | Bonus | Source |
+|---|---|---|
+| Intent score 7–10 | +$0.001 × intent_score/hr | `/api/extract` |
+| Any brand extracted | +$0.002/hr | `/api/extract` |
+| Premium brand (Apple, BMW, Sony, etc.) | +$0.003/hr | `PREMIUM_BRANDS` list in background.js |
+| Product type extracted | +$0.001/hr | `/api/extract` |
+| Page type = checkout | +$0.010/hr | content.js |
+| Page type = product | +$0.005/hr | content.js |
+| Page type = search | +$0.002/hr | content.js |
+| Same brand on 3+ domains today | +$0.005/hr | cross-site bonus in background.js |
 
 ---
 
@@ -372,7 +483,7 @@ npm run dev
 
 # Extension
 # Load reclaim/extension as unpacked extension in chrome://extensions
-# After any background.js change: chrome://extensions → Reclaim → refresh icon
+# After any background.js or content.js change: chrome://extensions → Reclaim → refresh icon
 # To clear extension storage: Service Worker console → chrome.storage.local.clear()
 ```
 
@@ -393,3 +504,6 @@ npm run dev
 - In-memory storage is intentional for current phase
 - When Gemini hits rate limits (429/503), always fall back gracefully — never crash
 - User IDs are generated as `usr_` + random string — no real PII stored
+- `content.js` runs at `document_idle` on all URLs — keep it lightweight, no heavy DOM operations
+- Extract cache is persisted in `chrome.storage.local` (not just memory) — survives Chrome restarts
+- `pendingContentData` in background.js is in-memory only — clears on service worker restart (acceptable)
