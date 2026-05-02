@@ -1,14 +1,76 @@
 // Reclaim - Content Script v2
 // Production-grade data extraction using industry standards
 // Price extraction: JSON-LD → Open Graph → Microdata → CSS selectors → Regex
-// Captures: search queries, scroll depth, prices, product info
+// Captures: search queries, scroll depth, prices, device type, time of day, page type, breadcrumbs
 
 (function () {
   if (!window.location.href.startsWith("http")) return;
 
   const domain = window.location.hostname.replace("www.", "");
 
-  // ─── 1. SEARCH QUERY CAPTURE ─────────────────────────────────────────────────
+  // ─── 1. DEVICE TYPE ──────────────────────────────────────────────────────────
+
+  function getDeviceType() {
+    const ua = navigator.userAgent.toLowerCase();
+    if (/(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(ua)) return "tablet";
+    if (/mobile|iphone|ipod|android|blackberry|mini|windows\sce|palm/i.test(ua)) return "mobile";
+    return "desktop";
+  }
+
+  const deviceType = getDeviceType();
+
+  // ─── 2. TIME OF DAY ──────────────────────────────────────────────────────────
+
+  function getTimeOfDay() {
+    const hour = new Date().getHours();
+    if (hour >= 5 && hour < 12) return "morning";
+    if (hour >= 12 && hour < 17) return "afternoon";
+    if (hour >= 17 && hour < 21) return "evening";
+    return "night";
+  }
+
+  const timeOfDay = getTimeOfDay();
+  const visitHour = new Date().getHours();
+
+  // ─── 3. PAGE TYPE DETECTION ──────────────────────────────────────────────────
+
+  function getPageType() {
+    const url = window.location.href.toLowerCase();
+    const path = window.location.pathname.toLowerCase();
+
+    // Cart / Checkout — highest intent
+    if (/cart|checkout|basket|buy-now|payment|order/.test(url)) return "checkout";
+
+    // Product page
+    if (/product|item|dp\/|pdp|detail|p\/[a-z0-9]/.test(url)) return "product";
+
+    // Search results
+    if (/search|query|find|results|keyword|s=|q=|k=/.test(url)) return "search";
+
+    // Category / Listing page
+    if (/category|collection|listing|browse|shop|c\//.test(url)) return "category";
+
+    // Article / Blog
+    if (/article|blog|news|post|story|read/.test(url)) return "article";
+
+    // Job listing
+    if (/job|career|vacancy|hiring|position|role/.test(url)) return "job_listing";
+
+    // Property listing
+    if (/property|flat|apartment|villa|bhk|rent|sale/.test(url)) return "property_listing";
+
+    // Travel booking
+    if (/flight|hotel|bus|train|holiday|package|booking/.test(url)) return "travel_booking";
+
+    // Homepage
+    if (path === "/" || path === "") return "homepage";
+
+    return "other";
+  }
+
+  const pageType = getPageType();
+
+  // ─── 4. SEARCH QUERY CAPTURE ─────────────────────────────────────────────────
 
   const SEARCH_PARAMS = {
     "google.com": "q",
@@ -35,6 +97,13 @@
     "booking.com": "ss",
     "makemytrip.com": "query",
     "cleartrip.com": "query",
+    "skyscanner.com": "query",
+    "irctc.co.in": "query",
+    "practo.com": "q",
+    "1mg.com": "q",
+    "nykaa.com": "q",
+    "zepto.com": "q",
+    "blinkit.com": "q",
   };
 
   function extractSearchQuery() {
@@ -45,7 +114,7 @@
     return query ? decodeURIComponent(query).trim() : null;
   }
 
-  // ─── 2. PRICE EXTRACTION (Production Grade) ───────────────────────────────────
+  // ─── 5. PRICE EXTRACTION (Production Grade) ──────────────────────────────────
 
   // Step 1: JSON-LD (schema.org standard — used by Google Shopping, Shopify, WooCommerce)
   function extractFromJSONLD() {
@@ -58,14 +127,12 @@
         const items = Array.isArray(data) ? data : [data];
 
         for (const item of items) {
-          // Handle @graph array (common in Shopify)
           const nodes = item["@graph"] ? item["@graph"] : [item];
 
           for (const node of nodes) {
             const type = node["@type"];
             if (!type) continue;
 
-            // Product schema
             if (type === "Product" || type === "IndividualProduct") {
               const offer = node.offers || node.Offers;
               if (offer) {
@@ -83,11 +150,6 @@
                 }
               }
             }
-
-            // BreadcrumbList — useful for category context
-            if (type === "BreadcrumbList" && node.itemListElement) {
-              // stored for context, not price
-            }
           }
         }
       } catch {
@@ -97,7 +159,7 @@
     return results;
   }
 
-  // Step 2: Open Graph / Meta tags (Facebook, Twitter, Google standards)
+  // Step 2: Open Graph / Meta tags
   function extractFromMetaTags() {
     const getMeta = (name) => {
       const el = document.querySelector(
@@ -122,7 +184,7 @@
     return [];
   }
 
-  // Step 3: Microdata (schema.org itemprop — used by many Indian e-commerce sites)
+  // Step 3: Microdata
   function extractFromMicrodata() {
     const results = [];
     const products = document.querySelectorAll('[itemtype*="schema.org/Product"]');
@@ -147,7 +209,7 @@
     return results;
   }
 
-  // Step 4: Site-specific CSS selectors (fallback for major Indian sites)
+  // Step 4: Site-specific CSS selectors
   function extractFromSelectors() {
     const SELECTORS = {
       "amazon.in":   [".a-price-whole", "#corePriceDisplay_desktop_feature_div .a-price-whole"],
@@ -178,7 +240,7 @@
     return results;
   }
 
-  // Step 5: Regex fallback — scan visible text for price patterns
+  // Step 5: Regex fallback
   function extractFromRegex() {
     const PRICE_REGEX = /[₹$€£¥]\s?\d[\d,]*(\.\d{1,2})?/g;
     const bodyText = document.body.innerText.slice(0, 8000);
@@ -188,7 +250,6 @@
     }));
   }
 
-  // Master price extractor — runs all methods in priority order
   function extractPrices() {
     let results = extractFromJSONLD();
     if (results.length === 0) results = extractFromMetaTags();
@@ -198,7 +259,49 @@
     return results.slice(0, 5);
   }
 
-  // ─── 3. SCROLL DEPTH TRACKING ────────────────────────────────────────────────
+  // ─── 6. BREADCRUMB EXTRACTION ────────────────────────────────────────────────
+
+  function extractBreadcrumbs() {
+    const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+
+    for (const script of scripts) {
+      try {
+        const data = JSON.parse(script.textContent);
+        const items = Array.isArray(data) ? data : [data];
+
+        for (const item of items) {
+          const nodes = item["@graph"] ? item["@graph"] : [item];
+          for (const node of nodes) {
+            if (node["@type"] === "BreadcrumbList" && node.itemListElement) {
+              return node.itemListElement
+                .sort((a, b) => (a.position || 0) - (b.position || 0))
+                .map(el => el.name || el.item?.name || "")
+                .filter(Boolean)
+                .slice(0, 5);
+            }
+          }
+        }
+      } catch {
+        // skip
+      }
+    }
+
+    // Fallback: look for breadcrumb nav elements
+    const breadcrumbEl = document.querySelector(
+      'nav[aria-label*="breadcrumb"], [class*="breadcrumb"], [class*="Breadcrumb"]'
+    );
+    if (breadcrumbEl) {
+      const items = breadcrumbEl.querySelectorAll("a, span, li");
+      return [...items]
+        .map(el => el.textContent.trim())
+        .filter(t => t.length > 0 && t.length < 50)
+        .slice(0, 5);
+    }
+
+    return [];
+  }
+
+  // ─── 7. SCROLL DEPTH TRACKING ────────────────────────────────────────────────
 
   let maxScrollDepth = 0;
   let scrollTimer = null;
@@ -223,7 +326,7 @@
 
   window.addEventListener("scroll", onScroll, { passive: true });
 
-  // ─── 4. SEND DATA TO BACKGROUND ──────────────────────────────────────────────
+  // ─── 8. SEND DATA TO BACKGROUND ──────────────────────────────────────────────
 
   function sendData(extra = {}) {
     try {
@@ -233,23 +336,30 @@
     }
   }
 
-  // Send search query immediately
+  // Send immediately on page load — device, time, page type, search query
   const searchQuery = extractSearchQuery();
-  if (searchQuery) {
-    sendData({ searchQuery });
-  }
+  const immediateData = {
+    deviceType,
+    timeOfDay,
+    visitHour,
+    pageType,
+  };
+  if (searchQuery) immediateData.searchQuery = searchQuery;
+  sendData(immediateData);
 
-  // Extract prices + send after page fully loads
+  // Extract prices + breadcrumbs after full page load
   window.addEventListener("load", () => {
     const prices = extractPrices();
-    if (prices.length > 0) {
-      sendData({ prices });
-    }
+    const breadcrumbs = extractBreadcrumbs();
+
+    const loadData = {};
+    if (prices.length > 0) loadData.prices = prices;
+    if (breadcrumbs.length > 0) loadData.breadcrumbs = breadcrumbs;
 
     const initialDepth = calculateScrollDepth();
-    if (initialDepth > 0) {
-      sendData({ scrollDepth: initialDepth });
-    }
+    if (initialDepth > 0) loadData.scrollDepth = initialDepth;
+
+    if (Object.keys(loadData).length > 0) sendData(loadData);
   });
 
   // Send max scroll depth on page unload
