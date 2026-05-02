@@ -102,18 +102,21 @@ async function saveSession(url, title, durationSeconds, extraData = {}) {
   session.visits += 1;
   session.earned += earned;
 
+  // Null-guarded updates
   if (extracted.brand) session.brand = extracted.brand;
-  if (extracted.intent_score) session.intent_score = Math.max(session.intent_score, extracted.intent_score);
-  if (extracted.keywords?.length) session.keywords = [...new Set([...session.keywords, ...extracted.keywords])];
+  if (extracted.intent_score) session.intent_score = Math.max(session.intent_score || 3, extracted.intent_score);
+  if (extracted.keywords?.length) {
+    session.keywords = [...new Set([...(session.keywords || []), ...extracted.keywords])];
+  }
 
-  if (extraData.searchQuery && !session.searchQueries.includes(extraData.searchQuery)) {
-    session.searchQueries.push(extraData.searchQuery);
+  if (extraData.searchQuery && !(session.searchQueries || []).includes(extraData.searchQuery)) {
+    session.searchQueries = [...(session.searchQueries || []), extraData.searchQuery];
   }
   if (extraData.scrollDepth) {
-    session.maxScrollDepth = Math.max(session.maxScrollDepth, extraData.scrollDepth);
+    session.maxScrollDepth = Math.max(session.maxScrollDepth || 0, extraData.scrollDepth);
   }
   if (extraData.prices?.length) {
-    session.pricesFound = [...new Set([...session.pricesFound, ...extraData.prices])];
+    session.pricesFound = [...new Set([...(session.pricesFound || []), ...extraData.prices])];
   }
 
   await chrome.storage.local.set({
