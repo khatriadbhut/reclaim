@@ -4,6 +4,7 @@
 // Location is handled by onboarding page
 
 const BACKEND_URL = "http://localhost:3000";
+const EXTRACT_CACHE_TTL = 1000 * 60 * 60 * 24; // 24 hours
 
 const FALLBACK_EARNINGS_RATE = {
   shopping: 0.05, finance: 0.06, health: 0.05, travel: 0.04,
@@ -32,10 +33,16 @@ function getTodayKey() {
   return new Date().toISOString().split("T")[0];
 }
 
+// Extract structured data from domain + title via backend
+// Cache persists in chrome.storage.local for 24 hours (survives Chrome restarts)
 async function extractData(domain, title) {
   const cacheKey = `ext_${domain}_${(title || "").slice(0, 50)}`;
   const cached = await chrome.storage.local.get(cacheKey);
-  if (cached[cacheKey]) return cached[cacheKey];
+
+  // Check if cache exists and is still valid (within 24 hours)
+  if (cached[cacheKey] && cached[cacheKey].expiresAt > Date.now()) {
+    return cached[cacheKey].data;
+  }
 
   try {
     const res = await fetch(`${BACKEND_URL}/api/extract`, {
@@ -44,8 +51,15 @@ async function extractData(domain, title) {
       body: JSON.stringify({ domain, title })
     });
     const data = await res.json();
-    await chrome.storage.local.set({ [cacheKey]: data });
-    setTimeout(() => chrome.storage.local.remove(cacheKey), 3600000);
+
+    // Store with expiry timestamp — survives browser restarts
+    await chrome.storage.local.set({
+      [cacheKey]: {
+        data,
+        expiresAt: Date.now() + EXTRACT_CACHE_TTL
+      }
+    });
+
     return data;
   } catch {
     return {
@@ -137,6 +151,7 @@ async function saveSession(url, title, durationSeconds, extraData = {}) {
   });
 }
 
+// Sync all data to backend
 async function syncToBackend() {
   try {
     const userId = await getUserId();
@@ -163,6 +178,7 @@ async function syncToBackend() {
   }
 }
 
+// Active tab tracking
 let activeTabId = null;
 let activeTabUrl = null;
 let activeTabTitle = null;
@@ -239,6 +255,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
+// Listen for messages from content.js
 chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.type === "CONTENT_DATA") {
     const domain = getDomain(sender.tab?.url || "");
