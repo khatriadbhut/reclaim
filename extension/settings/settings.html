@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Reclaim — Settings</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d0d0d; --surface: #161616; --border: #2a2a2a;
+      --accent: #00e5a0; --accent-dim: #00e5a018; --text: #f0f0f0; --muted: #666; --red: #ff4d4d;
+    }
+    html, body { min-height: 100vh; background: var(--bg); color: var(--text); font-family: 'Syne', sans-serif; display: flex; justify-content: center; padding: 48px 16px 80px; }
+    .card { width: 100%; max-width: 480px; }
+
+    /* ── Logo (unified) ── */
+    .logo { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 40px; display: flex; align-items: center; gap: 10px; }
+    .logo-text-re { color: var(--accent); }
+    .logo-text-claim { color: var(--text); }
+    .logo-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 32px; }
+    h1 .accent { color: var(--accent); }
+
+    .section-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 12px; }
+
+    /* ── Profile card ── */
+    .profile-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 24px; display: flex; align-items: center; gap: 16px; }
+    .profile-avatar { width: 52px; height: 52px; border-radius: 50%; border: 2px solid var(--accent); }
+    .profile-avatar-placeholder { width: 52px; height: 52px; border-radius: 50%; background: var(--accent-dim); border: 2px solid var(--accent); display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: var(--accent); }
+    .profile-info { flex: 1; }
+    .profile-name { font-size: 16px; font-weight: 700; margin-bottom: 2px; }
+    .profile-email { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; }
+
+    /* ── Demographics edit block ── */
+    .demo-block { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 24px; }
+    .demo-block-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .demo-block-title { font-size: 13px; font-weight: 700; }
+    .edit-toggle { font-size: 12px; color: var(--accent); font-family: 'DM Mono', monospace; cursor: pointer; background: none; border: none; padding: 0; transition: opacity 0.15s; }
+    .edit-toggle:hover { opacity: 0.8; }
+
+    /* Read-only view */
+    .demo-readonly { display: block; }
+    .settings-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .settings-row:last-child { border-bottom: none; }
+    .settings-row-label { font-size: 14px; font-weight: 600; }
+    .settings-row-value { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; }
+
+    /* Edit view */
+    .demo-edit { display: none; }
+    .demo-edit.visible { display: block; }
+    .demo-readonly.hidden { display: none; }
+
+    .field-group { margin-bottom: 20px; }
+    .field-label { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 10px; display: block; }
+    .pill-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pill { padding: 7px 14px; border-radius: 100px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); font-size: 12px; font-family: 'Syne', sans-serif; font-weight: 600; cursor: pointer; transition: all 0.15s; user-select: none; }
+    .pill:hover { border-color: #00e5a040; color: var(--text); }
+    .pill.selected { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+    .styled-select { width: 100%; padding: 11px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; font-family: 'Syne', sans-serif; font-weight: 600; cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; }
+    .styled-select:focus { outline: none; border-color: var(--accent); }
+    .styled-select option { background: var(--surface); }
+
+    .save-row { display: flex; gap: 8px; margin-top: 20px; }
+    .btn-save { flex: 1; padding: 11px; border-radius: 8px; font-size: 13px; font-family: 'Syne', sans-serif; font-weight: 700; cursor: pointer; border: none; background: var(--accent); color: #000; transition: opacity 0.15s; }
+    .btn-save:hover:not(:disabled) { opacity: 0.88; }
+    .btn-save:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-cancel { flex: 1; padding: 11px; border-radius: 8px; font-size: 13px; font-family: 'Syne', sans-serif; font-weight: 700; cursor: pointer; background: var(--surface); color: var(--muted); border: 1px solid var(--border); transition: opacity 0.15s; }
+    .btn-cancel:hover { opacity: 0.8; }
+
+    .save-status { font-size: 11px; font-family: 'DM Mono', monospace; text-align: center; margin-top: 8px; height: 16px; transition: color 0.3s; }
+    .save-status.success { color: var(--accent); }
+    .save-status.error { color: var(--red); }
+
+    /* ── Static settings rows ── */
+    .settings-block { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 24px; overflow: hidden; }
+    .settings-block .settings-row { padding: 16px 20px; }
+
+    /* ── Location nudge ── */
+    .location-nudge { background: var(--accent-dim); border: 1px solid #00e5a025; border-radius: 10px; padding: 16px 20px; margin-bottom: 24px; }
+    .location-nudge-title { font-size: 13px; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+    .location-nudge-text { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; line-height: 1.6; }
+
+    /* ── Footer buttons ── */
+    .btn { width: 100%; padding: 14px; border-radius: 8px; font-size: 14px; font-family: 'Syne', sans-serif; font-weight: 700; cursor: pointer; border: none; transition: opacity 0.15s; margin-bottom: 10px; }
+    .btn:hover { opacity: 0.88; }
+    .btn-danger { background: #ff4d4d20; color: var(--red); border: 1px solid #ff4d4d40; }
+    .btn-ghost { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+    .version { text-align: center; font-size: 11px; color: var(--muted); font-family: 'DM Mono', monospace; margin-top: 20px; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <!-- Logo (unified) -->
+  <div class="logo">
+    <span><span class="logo-text-re">re</span><span class="logo-text-claim">claim</span></span>
+    <div class="logo-dot"></div>
+  </div>
+  <h1>Your <span class="accent">settings.</span></h1>
+
+  <!-- Account -->
+  <div class="section-title">Account</div>
+  <div class="profile-card" id="profileCard">
+    <div id="profileAvatarWrap"></div>
+    <div class="profile-info">
+      <div class="profile-name" id="profileName">Loading...</div>
+      <div class="profile-email" id="profileEmail"></div>
+    </div>
+  </div>
+
+  <!-- Demographics (editable) -->
+  <div class="section-title">Your Data</div>
+  <div class="demo-block">
+    <div class="demo-block-header">
+      <span class="demo-block-title">Demographics</span>
+      <button class="edit-toggle" id="editToggle">Edit</button>
+    </div>
+
+    <!-- Read-only view -->
+    <div class="demo-readonly" id="demoReadonly">
+      <div class="settings-row">
+        <span class="settings-row-label">Age Range</span>
+        <span class="settings-row-value" id="settingAge">—</span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-row-label">Gender</span>
+        <span class="settings-row-value" id="settingGender">—</span>
+      </div>
+      <div class="settings-row" style="border-bottom:none">
+        <span class="settings-row-label">Occupation</span>
+        <span class="settings-row-value" id="settingOccupation">—</span>
+      </div>
+    </div>
+
+    <!-- Edit view -->
+    <div class="demo-edit" id="demoEdit">
+      <div class="field-group">
+        <span class="field-label">Age Range</span>
+        <div class="pill-group" id="edit-age-group">
+          <div class="pill" data-group="age" data-value="under-18">Under 18</div>
+          <div class="pill" data-group="age" data-value="18-24">18 – 24</div>
+          <div class="pill" data-group="age" data-value="25-34">25 – 34</div>
+          <div class="pill" data-group="age" data-value="35-44">35 – 44</div>
+          <div class="pill" data-group="age" data-value="45+">45+</div>
+        </div>
+      </div>
+      <div class="field-group">
+        <span class="field-label">Gender</span>
+        <div class="pill-group" id="edit-gender-group">
+          <div class="pill" data-group="gender" data-value="M">Male</div>
+          <div class="pill" data-group="gender" data-value="F">Female</div>
+          <div class="pill" data-group="gender" data-value="other">Other</div>
+          <div class="pill" data-group="gender" data-value="prefer-not">Prefer not to say</div>
+        </div>
+      </div>
+      <div class="field-group">
+        <span class="field-label">Occupation</span>
+        <select class="styled-select" id="edit-occupation">
+          <option value="" disabled>Select your occupation</option>
+          <option value="student">Student</option>
+          <option value="salaried">Salaried Employee</option>
+          <option value="business-owner">Business Owner</option>
+          <option value="freelancer">Freelancer</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="save-row">
+        <button class="btn-cancel" id="cancelEdit">Cancel</button>
+        <button class="btn-save" id="saveDemo">Save Changes</button>
+      </div>
+      <div class="save-status" id="saveStatus"></div>
+    </div>
+  </div>
+
+  <!-- Location (read-only) -->
+  <div class="settings-block">
+    <div class="settings-row">
+      <span class="settings-row-label">Location</span>
+      <span class="settings-row-value" id="settingLocation">—</span>
+    </div>
+    <div class="settings-row">
+      <span class="settings-row-label">Location Source</span>
+      <span class="settings-row-value" id="settingLocationSource">—</span>
+    </div>
+  </div>
+
+  <!-- Location nudge if GPS denied -->
+  <div class="location-nudge" id="locationNudge" style="display:none">
+    <div class="location-nudge-title">📍 Allow GPS for higher earnings</div>
+    <div class="location-nudge-text">GPS location is more accurate than IP-based detection. To enable it, click the lock icon in Chrome's address bar → Site settings → Location → Allow.<br><br>Real estate and finance packages pay 3–10× more with precise city data.</div>
+  </div>
+
+  <!-- Stats -->
+  <div class="section-title">Stats</div>
+  <div class="settings-block">
+    <div class="settings-row">
+      <span class="settings-row-label">Total Earned</span>
+      <span class="settings-row-value" id="statEarnings">$0.0000</span>
+    </div>
+    <div class="settings-row">
+      <span class="settings-row-label">Total Browsing</span>
+      <span class="settings-row-value" id="statBrowsing">0h</span>
+    </div>
+    <div class="settings-row">
+      <span class="settings-row-label">Data synced</span>
+      <span class="settings-row-value" id="statSync">never</span>
+    </div>
+  </div>
+
+  <button class="btn btn-danger" id="logoutBtn">Sign Out</button>
+  <button class="btn btn-ghost" id="backBtn">← Back</button>
+  <div class="version">Reclaim v1.0.0</div>
+</div>
+<script src="settings.js"></script>
+</body>
+</html>

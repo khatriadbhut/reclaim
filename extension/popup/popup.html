@@ -8,264 +8,138 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --bg:        #0d0d0d;
-      --surface:   #161616;
-      --border:    #2a2a2a;
-      --accent:    #00e5a0;
-      --accent-dim:#00e5a025;
-      --text:      #f0f0f0;
-      --muted:     #666;
-      --red:       #ff4d4d;
-      --yellow:    #ffd166;
-      --blue:      #4d9fff;
-      --purple:    #b57bee;
+      --bg: #0d0d0d; --surface: #161616; --border: #2a2a2a;
+      --accent: #00e5a0; --accent-dim: #00e5a025; --text: #f0f0f0; --muted: #666;
+      --red: #ff4d4d; --yellow: #ffd166; --blue: #4d9fff; --purple: #b57bee;
     }
+    body { width: 340px; min-height: 480px; background: var(--bg); color: var(--text); font-family: 'Syne', sans-serif; overflow-x: hidden; }
 
-    body {
-      width: 340px;
-      min-height: 480px;
-      background: var(--bg);
-      color: var(--text);
-      font-family: 'Syne', sans-serif;
-      overflow-x: hidden;
-    }
+    /* ── Header ── */
+    .header { padding: 16px 20px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
 
-    /* Header */
-    .header {
-      padding: 16px 20px 12px;
-      border-bottom: 1px solid var(--border);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
+    /* ── Logo (unified with onboarding/settings) ── */
     .logo {
-      font-size: 18px;
-      font-weight: 800;
-      letter-spacing: -0.5px;
-      color: var(--accent);
+      font-size: 18px; font-weight: 800; letter-spacing: -0.5px;
+      display: flex; align-items: center; gap: 8px;
     }
-
-    .logo span {
-      color: var(--text);
-    }
-
-    .status-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 8px var(--accent);
+    .logo-text-re { color: var(--accent); }
+    .logo-text-claim { color: var(--text); }
+    .logo-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 8px var(--accent);
       animation: pulse 2s infinite;
     }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
+    .header-right { display: flex; align-items: center; gap: 8px; }
+    .user-avatar-sm { width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--accent); cursor: pointer; }
+    .user-avatar-sm-placeholder { width: 24px; height: 24px; border-radius: 50%; background: var(--accent-dim); border: 1px solid var(--accent); display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: var(--accent); cursor: pointer; }
 
-    /* Earnings hero */
-    .earnings-block {
-      padding: 20px 20px 16px;
-      border-bottom: 1px solid var(--border);
-    }
+    /* ── Logged out state ── */
+    .login-prompt { padding: 24px 20px; text-align: center; }
+    .login-prompt-title { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+    .login-prompt-sub { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; line-height: 1.5; margin-bottom: 20px; }
+    .google-btn-sm { width: 100%; padding: 10px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; font-family: 'Syne', sans-serif; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; transition: all 0.2s; }
+    .google-btn-sm:hover { border-color: var(--accent); color: var(--accent); }
+    .google-icon-sm { width: 16px; height: 16px; }
 
-    .earnings-label {
-      font-size: 10px;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      color: var(--muted);
-      font-family: 'DM Mono', monospace;
-      margin-bottom: 6px;
-    }
+    /* ── Earnings ── */
+    .earnings-block { padding: 20px 20px 16px; border-bottom: 1px solid var(--border); }
+    .earnings-label { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 6px; }
+    .earnings-amount { font-size: 38px; font-weight: 800; color: var(--accent); letter-spacing: -2px; line-height: 1; }
+    .earnings-amount .cents { font-size: 20px; font-weight: 600; opacity: 0.7; }
+    .earnings-sub { font-size: 11px; color: var(--muted); font-family: 'DM Mono', monospace; margin-top: 6px; }
 
-    .earnings-amount {
-      font-size: 38px;
-      font-weight: 800;
-      color: var(--accent);
-      letter-spacing: -2px;
-      line-height: 1;
-    }
-
-    .earnings-amount .cents {
-      font-size: 20px;
-      font-weight: 600;
-      opacity: 0.7;
-    }
-
-    .earnings-sub {
-      font-size: 11px;
-      color: var(--muted);
-      font-family: 'DM Mono', monospace;
-      margin-top: 6px;
-    }
-
-    /* Today's stats */
-    .section {
-      padding: 14px 20px;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .section-title {
-      font-size: 10px;
-      letter-spacing: 2px;
-      text-transform: uppercase;
-      color: var(--muted);
-      font-family: 'DM Mono', monospace;
-      margin-bottom: 12px;
-    }
-
-    /* Category bars */
-    .category-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .category-row {
-      display: grid;
-      grid-template-columns: 80px 1fr 52px;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .category-name {
-      font-size: 11px;
-      color: var(--text);
-      font-family: 'DM Mono', monospace;
-      text-transform: capitalize;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .bar-track {
-      height: 4px;
-      background: var(--border);
-      border-radius: 2px;
-      overflow: hidden;
-    }
-
-    .bar-fill {
-      height: 100%;
-      border-radius: 2px;
-      transition: width 0.6s ease;
-    }
-
-    .category-time {
-      font-size: 10px;
-      color: var(--muted);
-      font-family: 'DM Mono', monospace;
-      text-align: right;
-    }
-
-    /* Category colors */
-    .cat-shopping   { background: var(--accent); }
-    .cat-social     { background: var(--purple); }
-    .cat-news       { background: var(--blue); }
-    .cat-finance    { background: var(--yellow); }
+    /* ── Sections ── */
+    .section { padding: 14px 20px; border-bottom: 1px solid var(--border); }
+    .section-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 12px; }
+    .category-list { display: flex; flex-direction: column; gap: 8px; }
+    .category-row { display: grid; grid-template-columns: 80px 1fr 52px; align-items: center; gap: 8px; }
+    .category-name { font-size: 11px; color: var(--text); font-family: 'DM Mono', monospace; text-transform: capitalize; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .bar-track { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+    .category-time { font-size: 10px; color: var(--muted); font-family: 'DM Mono', monospace; text-align: right; }
+    .cat-shopping { background: var(--accent); }
+    .cat-social { background: var(--purple); }
+    .cat-news { background: var(--blue); }
+    .cat-finance { background: var(--yellow); }
     .cat-entertainment { background: var(--red); }
-    .cat-education  { background: #4dffb5; }
-    .cat-health     { background: #ff9f4d; }
-    .cat-travel     { background: #4dd4ff; }
+    .cat-education { background: #4dffb5; }
+    .cat-health { background: #ff9f4d; }
+    .cat-travel { background: #4dd4ff; }
     .cat-technology { background: #c4ff4d; }
-    .cat-other      { background: var(--muted); }
+    .cat-other { background: var(--muted); }
 
-    /* AI insight */
-    .insight-box {
-      background: var(--accent-dim);
-      border: 1px solid #00e5a030;
-      border-radius: 8px;
-      padding: 12px;
-      font-size: 12px;
-      line-height: 1.5;
-      color: #c0fff0;
-      font-family: 'DM Mono', monospace;
-      min-height: 56px;
-    }
+    /* ── Insight ── */
+    .insight-box { background: var(--accent-dim); border: 1px solid #00e5a030; border-radius: 8px; padding: 12px; font-size: 12px; line-height: 1.5; color: #c0fff0; font-family: 'DM Mono', monospace; min-height: 56px; }
+    .insight-box.loading { color: var(--muted); animation: shimmer 1.5s infinite; }
+    @keyframes shimmer { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-    .insight-box.loading {
-      color: var(--muted);
-      animation: shimmer 1.5s infinite;
-    }
-
-    @keyframes shimmer {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
-    /* Footer */
-    .footer {
-      padding: 12px 20px;
-      display: flex;
-      gap: 8px;
-    }
-
-    .btn {
-      flex: 1;
-      padding: 9px 0;
-      border-radius: 6px;
-      font-size: 11px;
-      font-family: 'Syne', sans-serif;
-      font-weight: 700;
-      letter-spacing: 0.5px;
-      cursor: pointer;
-      border: none;
-      transition: opacity 0.15s;
-    }
-
+    /* ── Footer ── */
+    .footer { padding: 12px 20px; display: flex; gap: 8px; }
+    .btn { flex: 1; padding: 9px 0; border-radius: 6px; font-size: 11px; font-family: 'Syne', sans-serif; font-weight: 700; letter-spacing: 0.5px; cursor: pointer; border: none; transition: opacity 0.15s; }
     .btn:hover { opacity: 0.85; }
-
-    .btn-primary {
-      background: var(--accent);
-      color: #000;
-    }
-
-    .btn-ghost {
-      background: var(--surface);
-      color: var(--muted);
-      border: 1px solid var(--border);
-    }
-
-    .empty-state {
-      text-align: center;
-      color: var(--muted);
-      font-size: 12px;
-      font-family: 'DM Mono', monospace;
-      padding: 16px 0;
-    }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-ghost { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+    .empty-state { text-align: center; color: var(--muted); font-size: 12px; font-family: 'DM Mono', monospace; padding: 16px 0; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
 
   <div class="header">
-    <div class="logo">re<span>claim</span></div>
-    <div class="status-dot" id="statusDot"></div>
-  </div>
-
-  <div class="earnings-block">
-    <div class="earnings-label">Total Earned</div>
-    <div class="earnings-amount" id="totalEarnings">$0<span class="cents">.00</span></div>
-    <div class="earnings-sub" id="todayEarnings">today: $0.00</div>
-  </div>
-
-  <div class="section">
-    <div class="section-title">Today's Browsing</div>
-    <div class="category-list" id="categoryList">
-      <div class="empty-state">start browsing to see your data</div>
+    <!-- Unified logo -->
+    <div class="logo">
+      <span><span class="logo-text-re">re</span><span class="logo-text-claim">claim</span></span>
+      <div class="logo-dot"></div>
+    </div>
+    <div class="header-right">
+      <div id="userAvatarContainer"></div>
     </div>
   </div>
 
-  <div class="section">
-    <div class="section-title">AI Insight</div>
-    <div class="insight-box loading" id="insightBox">analysing your browsing patterns...</div>
+  <!-- Logged out -->
+  <div id="loggedOutView" class="hidden">
+    <div class="login-prompt">
+      <div class="login-prompt-title">Sign in to Reclaim</div>
+      <div class="login-prompt-sub">Sign in to sync your earnings and profile across devices.</div>
+      <button class="google-btn-sm" id="popupSignInBtn">
+        <svg class="google-icon-sm" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+          <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+          <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+          <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+        </svg>
+        Continue with Google
+      </button>
+    </div>
   </div>
 
-  <div class="footer">
-    <button class="btn btn-primary" id="dashboardBtn">Dashboard</button>
-    <button class="btn btn-ghost" id="settingsBtn">Settings</button>
+  <!-- Logged in -->
+  <div id="loggedInView" class="hidden">
+    <div class="earnings-block">
+      <div class="earnings-label">Total Earned</div>
+      <div class="earnings-amount" id="totalEarnings">$0<span class="cents">.00</span></div>
+      <div class="earnings-sub" id="todayEarnings">today: $0.00</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Today's Browsing</div>
+      <div class="category-list" id="categoryList">
+        <div class="empty-state">start browsing to see your data</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">AI Insight</div>
+      <div class="insight-box loading" id="insightBox">analysing your browsing patterns...</div>
+    </div>
+
+    <div class="footer">
+      <button class="btn btn-primary" id="dashboardBtn">Dashboard</button>
+      <button class="btn btn-ghost" id="settingsBtn">Settings</button>
+    </div>
   </div>
 
   <script src="popup.js"></script>

@@ -8,12 +8,17 @@
     "storage",
     "alarms",
     "activeTab",
-    "scripting"
+    "scripting",
+    "identity"
   ],
   "host_permissions": [
     "<all_urls>",
     "http://localhost:3000/*"
   ],
+  "oauth2": {
+    "client_id": "223652421240-37eie1fotpbbbteeev1m4ol6jo419g5d.apps.googleusercontent.com",
+    "scopes": ["openid", "email", "profile"]
+  },
   "background": {
     "service_worker": "background.js"
   },
