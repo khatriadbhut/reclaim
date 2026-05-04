@@ -1,17 +1,19 @@
 # Reclaim — Project Status Document
-> Last updated: 2026-05-04
-> Version: 0.8.0
+> Last updated: 2026-05-05
+> Version: 0.9.0
 > Repo: https://github.com/khatriadbhut/reclaim
 
 ---
 
 ## Project Summary
 
-Reclaim is a self-data-selling platform where users monetize their browsing data through a Chrome browser extension. The extension tracks anonymized browsing metrics (domains visited, page titles, time spent, categories, extracted product/brand/intent signals) and aggregates them into valuable audience segments sold to companies for market research, ad targeting, and intent-based marketing. Users receive payments for contributing their data. An AI-powered suggestion engine provides personalized cross-site recommendations as an added value layer. Payments are handled via blockchain smart contracts.
+Reclaim is a consent-based browsing intelligence platform. A **Chrome extension (Manifest v3)** captures structured session signals (domains, time, categories, Gemini-backed extraction, content signals). A **Node backend** aggregates profiles and **audience packages** that **companies** can discover, purchase, and export (**Reclaim Business** — primary revenue path). A **React + Vite dashboard** serves marketing (`/`), the signed-in user view (`/user`), and the company storefront (`/company`).
 
-**Core positioning:** Meta, Google, and Instagram already collect this data and sell it for billions — without paying users a cent. Reclaim collects the same data, with full user consent, and gives users a cut of every sale.
+End users get transparency, category insights, and modeled earnings in the extension popup and user dashboard; **payouts / on-chain settlement** remain roadmap (UI may reference “coming soon”). An **AI insight** line (Gemini) summarizes browsing patterns in popup and dashboard when the backend is available.
 
-**Competitors:** Caden (down since late 2025), Datacy, SavvyConnect, Honeygain. None have successfully combined cross-site monetization with AI recommendations. Reclaim's browser extension gives richer, more real-time data than any mobile-app competitor.
+**Core positioning:** Incumbents monetize behavioral data without paying signal owners. Reclaim aligns incentives: consent-first collection, user-facing dashboard, and **B2B packages** (CSV/JSON exports) for buyers who need segments without raw surveillance optics.
+
+**Competitors / analogs:** Caden, Datacy, panel apps, bandwidth-sharing apps. Differentiation in-repo today: **extension depth** (extraction + content signals + session economics) plus a **live company purchase path** on the dashboard.
 
 ---
 
@@ -24,7 +26,7 @@ Reclaim is a self-data-selling platform where users monetize their browsing data
 | Dashboard Frontend | React + Vite (localhost:5173) |
 | Backend | Node.js + Express 5 (localhost:3000) |
 | AI | Google Gemini API (gemini-2.5-flash) |
-| Database | PostgreSQL (planned — not needed for demo, add post-funding) |
+| Database | PostgreSQL (planned — backend currently in-memory for dev/demo) |
 | Blockchain | Ethereum/Solana + MetaMask (planned — Sepolia testnet for demo) |
 | Hosting | AWS / Google Cloud (planned) |
 
@@ -60,10 +62,11 @@ reclaim/
 │       └── ui/
 │           └── constants.js     # BACKEND origin, shared styles, landing CSS
 └── extension/
-    ├── background.js            # Service worker: OAuth, extract, sync alarms, tab/session logic
-    ├── content.js               # Page signals → background
+    ├── background.js            # Service worker: OAuth, extract, sync, tab/session, external dashboard API, OPEN_USER_DASHBOARD
+    ├── content.js               # Page signals → background (all URLs, document_idle)
+    ├── dashboard-bridge.js      # Vite dashboard only: extension id meta + postMessage storage bridge
     ├── generate_icons.py        # Optional asset helper
-    ├── manifest.json            # MV3: tabs, storage, alarms, identity, scripting, content_scripts
+    ├── manifest.json            # MV3: externally_connectable, dual content_scripts (bridge + content)
     ├── icons/
     │   ├── icon16.png
     │   ├── icon48.png
@@ -210,22 +213,32 @@ A production-grade content script injected into every page via Manifest v3 `cont
 - **Google sign-in** — `chrome.identity` + `POST /api/auth/google`
 - **Session fields** per domain per day: domain, category, time, visits, earned, extract fields, content signals, device/time-of-day metadata
 - **Premium brands list** — bonus earnings for listed luxury / high-signal brands
+- **Vite dashboard ↔ extension (externally_connectable)** — `onMessageExternal` / `onConnectExternal` answer `RECLAIM_GET_STORAGE` with `chrome.storage.local` keys needed by `/user` (no redundant URL block on sender; manifest `matches` already scopes origins)
+- **`OPEN_USER_DASHBOARD`** — internal message from popup/onboarding: resolves dashboard URL (`reclaimDashboardUserUrl` in storage, else any open `localhost`/`127.0.0.1` :5173 tab origin, else `http://localhost:5173/user`), focuses existing `/user` tab or creates one
 
 ### 3. Onboarding + settings ✅
 - **`onboarding/`** — multi-step: T&C, Google sign-in (via background message), demographics, location (geolocation + fallback), success; persists profile and calls `/api/auth/user` + `/api/sync` as appropriate
+- **Final step (“Start earning”)** — saves `onboardingComplete`, posts `/api/sync` with **15s abort timeout** (so a hung backend cannot block completion), sends **`OPEN_USER_DASHBOARD`** to background, then closes the **onboarding tab** via `chrome.tabs.getCurrent()` (avoids removing the newly focused `/user` tab, which previously left the UI stuck on “saving…”)
 - **`settings/`** — profile and account-related UI tied to same backend URLs
 - **Install hook** — `onInstalled` opens onboarding tab (see `background.js`)
 
-### 4. Extension Manifest (`manifest.json`) ✅
-- MV3 service worker, `content_scripts`, `identity`, `scripting`, `host_permissions` including API origin in dev
+### 4. Extension — Dashboard bridge (`dashboard-bridge.js`) ✅
+- Injected only on `http://localhost:5173/*` and `http://127.0.0.1:5173/*` at **`document_start`**
+- Injects `<meta name="reclaim-extension-id" content="…">` so the page can call `chrome.runtime.connect` / `sendMessage` to the extension id
+- Listens for `postMessage` `GET_EXTENSION_STATE` from the dashboard and replies with `EXTENSION_STATE` + payload from `chrome.storage.local` (fallback when external messaging is flaky)
 
-### 5. Extension Popup UI ✅
-- Earnings, category bars, AI insight (`POST /api/insight`), link to dashboard (`localhost:5173`)
+### 5. Extension Manifest (`manifest.json`) ✅
+- MV3 service worker, **dual** `content_scripts` (dashboard bridge on dev dashboard origins + `content.js` on `<all_urls>`), `identity`, `scripting`, `host_permissions`, **`externally_connectable`** for dev dashboard origins
 
-### 6. Extension Icons ✅
+### 6. Extension Popup UI ✅
+- Logged-out / logged-in views, Google sign-in via background `SIGN_IN`
+- Earnings, category bars, AI insight (`POST /api/insight` — currently hardcoded `http://localhost:3000` in one call site)
+- **Dashboard** button → `chrome.runtime.sendMessage({ type: "OPEN_USER_DASHBOARD" })` (tab open/focus handled in background; optional `chrome.storage.local.reclaimDashboardUserUrl` override)
+
+### 7. Extension Icons ✅
 - 16 / 48 / 128 PNG under `extension/icons/`
 
-### 7. Backend (`server.js`) ✅
+### 8. Backend (`server.js`) ✅
 
 | Method | Endpoint | Description |
 |---|---|---|
@@ -260,11 +273,11 @@ A production-grade content script injected into every page via Manifest v3 `cont
 - `travel_planner` — travel > 10 min
 - `night_owl_shopper` — isNightOwl + shopping > 10 min
 
-### 8. Dashboard (React + Vite) ✅
-- **`Landing.jsx`** — marketing landing at `/`
-- **`UserDashboard.jsx`** at `/user` — reads **`chrome.storage.local`** when opened with extension APIs (same browser as extension); otherwise **demo sessions** for dev; **AI insight** always calls `BACKEND + /api/insight` when categories exist
-- **`CompanyDashboard.jsx`** at `/company` — Google OAuth redirect flow, cookie auth, packages, purchases, download links — all against `BACKEND`
-- Shared styling via `ui/constants.js` (`#0d0d0d`, `#00e5a0`, Syne + DM Mono)
+### 9. Dashboard (React + Vite) ✅
+- **`Landing.jsx`** — marketing landing at `/` (consumer + **Reclaim Business** paths; positioning line: consent-aware / anonymized packages / businesses)
+- **`UserDashboard.jsx`** at `/user` — **Not** raw `chrome.storage` in the page on localhost (DevTools “fake” storage). On **`127.0.0.1` / `localhost`**: (1) wait for extension id (`?ext=` if valid 32-char id, else meta from bridge), (2) **`chrome.runtime.connect` / `sendMessage`** to read storage via **`externally_connectable`**, (3) **`postMessage`** bridge to `dashboard-bridge.js` as fallback; wall-clock polling (not `requestAnimationFrame`-only) so background tabs still authenticate before timeout. Elsewhere / future hosted origin: direct `chrome.storage.local` when the API exists. **AI insight** calls `BACKEND + /api/insight` when categories exist. Sign-in gate when no extension session is readable.
+- **`CompanyDashboard.jsx`** at `/company` — Google OAuth redirect flow, cookie auth, packages, purchases, CSV download — all against `BACKEND` (CORS + credentials for company routes)
+- Shared styling via `ui/constants.js` (`BACKEND`, `#0d0d0d`, `#00e5a0`, Syne + DM Mono, category colors, etc.)
 
 ---
 
@@ -276,7 +289,7 @@ A production-grade content script injected into every page via Manifest v3 `cont
 - **Deploy** — align `BACKEND_URL` / `BACKEND` / `manifest.json` host permissions / `COMPANY_OAUTH_REDIRECT_URL` / `COMPANY_DASHBOARD_ORIGIN` with real hosts (see root `README.md`)
 
 ### Priority 2 — User dashboard without extension context
-- Optional: pass `userId` via query string and load **`GET /api/profile/:userId`** + synced session view so `/user` works in a normal browser tab for demos
+- Optional: server session or `userId` query + **`GET /api/profile/:userId`** + synced session view so `/user` works in a normal browser tab for investor demos (bridge + external messaging already cover extension-installed Chrome)
 
 ### Priority 3 — Historical data and charts
 - **`GET /api/data/:userId`** (or similar) for sessions by day; charts in dashboard (e.g. recharts)
@@ -296,10 +309,10 @@ A production-grade content script injected into every page via Manifest v3 `cont
 
 | Issue | Location | Priority | Status |
 |---|---|---|---|
-| User `/user` page uses demo data when `chrome.storage` unavailable | `dashboard/src/pages/UserDashboard.jsx` | Medium | Open |
+| `/user` still requires extension + bridge (or external messaging) in dev; no server-backed “demo user” session yet | `dashboard/src/pages/UserDashboard.jsx` | Medium | Open |
 | No error boundary in React dashboard | `dashboard/src/App.jsx` | Low | Open |
 | No rate limiting on API — can burn Gemini quota | `backend/server.js` | Medium | Open |
-| `popup.js` hardcodes API origin in one `fetch` | `extension/popup/popup.js` | Low | Open |
+| `popup.js` hardcodes `http://localhost:3000` for `/api/insight` | `extension/popup/popup.js` | Low | Open |
 | Extension offline / backend down — partial error messaging only | `extension/*` | Low | Open |
 | `/api/categorize` legacy | `backend/server.js` | Low | Superseded by `/api/extract` |
 | Extract cache in `chrome.storage.local` | `extension/background.js` | — | ✅ Mitigates quota burst |
@@ -405,3 +418,5 @@ npm run dev
 - `content.js` must stay lightweight (`document_idle`, all URLs)
 - Extract cache persists in `chrome.storage.local`
 - `pendingContentData` in background is in-memory only (clears on worker restart)
+- **Popup / onboarding** must not duplicate tab-open logic: use **`OPEN_USER_DASHBOARD`** in `background.js` so `reclaimDashboardUserUrl` and focus/reuse behavior stay consistent
+- **`dashboard-bridge.js`** + **`externally_connectable`** are both required for reliable `/user` auth on the Vite dev server; changing one without the other often breaks the gate
