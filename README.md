@@ -21,8 +21,7 @@ reclaim/
 │   └── .env             # you create this (see Setup)
 ├── dashboard/           # React + Vite (landing, /user, /company)
 │   └── src/
-├── .env.example         # template — copy to backend/.env
-└── backend/.env.example # same template, for convenience
+└── .env.example         # template — copy to backend/.env
 ```
 
 ## Prerequisites
@@ -39,7 +38,7 @@ reclaim/
 
 ```bash
 cd backend
-cp .env.example .env
+cp ../.env.example .env
 # Edit .env: set GEMINI_API_KEY at minimum (get a key from Google AI Studio / Gemini API).
 npm install
 npm start
@@ -92,7 +91,7 @@ If you use **Reclaim Business** (`/company`), set the `COMPANY_*` variables in `
 | `COMPANY_COOKIE_SECRET` | `/company` sessions | Signs HTTP-only session cookie |
 | `COMPANY_DASHBOARD_ORIGIN` | `/company` CORS | Dashboard origin (credentials) |
 
-Templates: **`.env.example`** (repo root) and **`backend/.env.example`**. Copy either to **`backend/.env`**.
+Template: **`.env.example`** at repo root — copy to **`backend/.env`** (`cp .env.example backend/.env` from the root, or `cp ../.env.example .env` after `cd backend`).
 
 ## Changing API / dashboard URLs (production)
 

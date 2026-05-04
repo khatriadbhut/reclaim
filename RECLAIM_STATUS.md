@@ -39,7 +39,6 @@ reclaim/
 ├── README.md                    # Quick start, production URL checklist
 ├── RECLAIM_STATUS.md            # This file
 ├── backend/
-│   ├── .env.example             # Same template (copy either source to backend/.env)
 │   ├── package.json
 │   └── server.js                # Express: user + company APIs, Gemini, in-memory store
 ├── dashboard/
@@ -86,14 +85,12 @@ reclaim/
 
 There is **no broken behavior**: the API loads **`backend/.env`** only (see `server.js` `dotenv.config`).
 
-What confuses people is **two valid ways to create that file**:
+Common ways to create it:
 
 | Approach | Command |
 |---|---|
 | From repo root | `cp .env.example backend/.env` then edit `backend/.env` |
-| From `backend/` | `cd backend && cp .env.example .env` then edit `.env` |
-
-Both templates (root `.env.example` and `backend/.env.example`) are aligned. Pick one workflow and stick to it.
+| From `backend/` | `cp ../.env.example .env` then edit `.env` |
 
 **Company dashboard** additionally needs `COMPANY_*` variables in `backend/.env` (see `.env.example`). Without them, `/company` OAuth will not work.
 
@@ -365,7 +362,7 @@ COMPANY_COOKIE_SECRET=
 COMPANY_DASHBOARD_ORIGIN=http://localhost:5173
 ```
 
-Full variable list and comments: **`.env.example`** (repo root or `backend/.env.example`).
+Full variable list and comments: **`.env.example`** at repo root.
 
 ---
 
@@ -374,7 +371,7 @@ Full variable list and comments: **`.env.example`** (repo root or `backend/.env.
 ```bash
 # Terminal 1 — Backend
 cd reclaim/backend
-cp .env.example .env
+cp ../.env.example .env
 # Edit .env — set GEMINI_API_KEY (and COMPANY_* if using /company)
 npm install
 npm start
