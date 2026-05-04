@@ -2,73 +2,122 @@
 
 > Your data. Your money.
 
-Reclaim is a browser extension that pays users for the browsing data they've been giving away for free. It collects anonymized browsing behavior, packages it into valuable market insights, and sells it to companies — returning the earnings directly to users.
+Reclaim is a Chrome extension (Manifest V3) plus a small API server. Users opt in, browsing signals sync to the backend, and earnings plus AI insights show up in a web dashboard. A separate **Reclaim Business** area on the same site lets companies sign in with Google (web OAuth), buy data packages, and download CSV/JSON.
 
-## How It Works
-
-1. User installs the Chrome extension
-2. Extension passively tracks domains visited, time spent, and browsing categories
-3. Data is anonymized and sent to the Reclaim backend
-4. Gemini AI generates personalized insights from cross-site browsing patterns
-5. Anonymized data packages are sold to companies for market research
-6. Users receive payments proportional to their data contribution
-
-## Project Structure
+## Repository layout
 
 ```
 reclaim/
-├── extension/          # Chrome Extension (Manifest V3)
+├── extension/           # Chrome extension (load unpacked)
 │   ├── manifest.json
-│   ├── background.js   # Service worker — tracks browsing data
-│   ├── popup/          # Extension popup UI
-│   └── icons/
-├── backend/            # Node.js API server
+│   ├── background.js    # Service worker — auth, sync, alarms
+│   ├── content.js
+│   ├── popup/
+│   ├── onboarding/    # First-run wizard (opens in a tab)
+│   └── settings/
+├── backend/             # Node.js + Express API
 │   ├── server.js
-│   └── routes/
-├── dashboard/          # React user dashboard
+│   ├── package.json
+│   └── .env             # you create this (see Setup)
+├── dashboard/           # React + Vite (landing, /user, /company)
 │   └── src/
-└── .env.example        # Environment variable template
+├── .env.example         # template — copy to backend/.env
+└── backend/.env.example # same template, for convenience
 ```
 
-## Tech Stack
+## Prerequisites
 
-- **Extension**: Chrome Manifest V3, Vanilla JS
-- **Backend**: Node.js, Express
-- **Dashboard**: React
-- **AI**: Google Gemini 1.5 Flash API
-- **Database**: PostgreSQL (planned)
-- **Payments**: Blockchain / stablecoin (planned)
+- **Node.js** 18+ (20+ recommended)
+- **Chrome** (Chromium) for the extension
+- **Google Cloud** project if you want real sign-in:
+  - One **Chrome extension** OAuth client (for `manifest.json` → `oauth2.client_id`)
+  - Optionally a second **Web application** OAuth client for company login (see `.env.example`)
 
-## Setup
+## Quick start (local development)
 
-### Extension
-1. Open Chrome → `chrome://extensions`
-2. Enable Developer Mode
-3. Click "Load unpacked" → select the `extension/` folder
+### 1. Backend API
 
-### Backend
 ```bash
 cd backend
-cp ../.env.example .env
-# Add your GEMINI_API_KEY to .env
+cp .env.example .env
+# Edit .env: set GEMINI_API_KEY at minimum (get a key from Google AI Studio / Gemini API).
 npm install
 npm start
 ```
 
-### Dashboard
+Server listens on **http://localhost:3000** by default. The extension and dashboard are hard-coded to that URL in dev (see “Changing URLs” below).
+
+### 2. Dashboard (optional but recommended)
+
 ```bash
 cd dashboard
 npm install
 npm run dev
 ```
 
-## Security
+Opens **http://localhost:5173** — landing at `/`, user dashboard at `/user`, company dashboard at `/company`.
 
-- API keys stored in `.env` only — never committed
-- All browsing data anonymized before leaving the device
-- User consent required before any data collection begins
-- See `.env.example` for required environment variables
+### 3. Chrome extension
+
+1. Open `chrome://extensions`
+2. Enable **Developer mode**
+3. **Load unpacked** → choose the `extension/` folder
+4. Replace `oauth2.client_id` in `extension/manifest.json` with your **Chrome extension** OAuth client ID from Google Cloud (or keep the bundled ID only if you are explicitly using that project).
+
+**Extension OAuth client (Google Cloud Console)**
+
+- Application type: **Chrome extension**
+- Paste the extension ID from `chrome://extensions` (Developer mode → ID under the extension name)
+- Authorized JavaScript origins / redirect URIs follow Google’s Chrome extension OAuth docs
+
+**First run:** the service worker opens `extension/onboarding/onboarding.html` in a tab. Sign-in talks to `POST /api/auth/google` on your backend; keep the backend running or sign-in will time out.
+
+### 4. Company dashboard (optional)
+
+If you use **Reclaim Business** (`/company`), set the `COMPANY_*` variables in `backend/.env` (see `.env.example`) and use a **Web application** OAuth client whose redirect URI is exactly:
+
+`http://localhost:3000/api/company/auth/google/callback`
+
+`COMPANY_DASHBOARD_ORIGIN` must match the dashboard origin (e.g. `http://localhost:5173`).
+
+## Environment variables
+
+| Variable | Required for | Purpose |
+|----------|----------------|---------|
+| `GEMINI_API_KEY` | AI insights | Gemini model calls |
+| `PORT` | API | Listen port (default 3000) |
+| `COMPANY_GOOGLE_CLIENT_ID` | `/company` login | Web OAuth client ID |
+| `COMPANY_GOOGLE_CLIENT_SECRET` | `/company` login | Web OAuth secret |
+| `COMPANY_OAUTH_REDIRECT_URL` | `/company` login | Callback URL registered in Google Cloud |
+| `COMPANY_COOKIE_SECRET` | `/company` sessions | Signs HTTP-only session cookie |
+| `COMPANY_DASHBOARD_ORIGIN` | `/company` CORS | Dashboard origin (credentials) |
+
+Templates: **`.env.example`** (repo root) and **`backend/.env.example`**. Copy either to **`backend/.env`**.
+
+## Changing API / dashboard URLs (production)
+
+For anything other than localhost, update:
+
+- `extension/background.js` — `BACKEND_URL`
+- `extension/onboarding/onboarding.js` — `BACKEND_URL`
+- `extension/settings/settings.js` — `BACKEND_URL`
+- `extension/popup/popup.js` — `fetch` URLs and dashboard link if needed
+- `extension/manifest.json` — `host_permissions` for your API origin (and remove `localhost` if unused)
+- `dashboard/src/ui/constants.js` — `BACKEND`
+- `backend/.env` — `COMPANY_OAUTH_REDIRECT_URL`, `COMPANY_DASHBOARD_ORIGIN` to match deployed hosts
+
+## Security notes
+
+- Never commit **`backend/.env`** or API keys.
+- Extension user auth uses **Chrome Identity** + your extension OAuth client; company auth uses **cookies** and a separate web OAuth client.
+- This repo uses **in-memory** storage on the server; restarting the backend clears users/sessions/purchases until you add a database.
+
+## Tech stack
+
+- Extension: Manifest V3, vanilla JS, `chrome.identity`
+- Backend: Node.js, Express 5, `@google/generative-ai`
+- Dashboard: React, Vite
 
 ## Status
 
-Active development — building toward YC Summer 2026 demo.
+Active development — extension, API, landing, user dashboard, and company marketplace flow are usable locally with the steps above.
