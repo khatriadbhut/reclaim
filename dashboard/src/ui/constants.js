@@ -25,6 +25,10 @@ export function getTodayKey() {
 
 export const landingCss = `
 .reclaimLanding{ position:relative; overflow:hidden; }
+.reveal{ opacity:0; transform: translateY(10px); transition: opacity .55s cubic-bezier(.2,.8,.2,1), transform .55s cubic-bezier(.2,.8,.2,1); will-change: opacity, transform; }
+.reveal.in{ opacity:1; transform: translateY(0); }
+.revealItem{ opacity:0; transform: translateY(10px); transition: opacity .55s cubic-bezier(.2,.8,.2,1), transform .55s cubic-bezier(.2,.8,.2,1); transition-delay: var(--d, 0ms); will-change: opacity, transform; }
+.reveal.in .revealItem{ opacity:1; transform: translateY(0); }
 .landingBg{
   position:absolute; inset:-200px;
   background:
@@ -33,7 +37,7 @@ export const landingCss = `
     radial-gradient(520px 420px at 60% 90%, rgba(181,123,238,0.12), transparent 60%),
     linear-gradient(180deg, #0b0b0b 0%, #0d0d0d 50%, #0b0b0b 100%);
   filter: blur(0px);
-  animation: bgShift 10s ease-in-out infinite alternate;
+  animation: bgShift 14s ease-in-out infinite alternate;
   z-index:0;
 }
 .landingGridOverlay{
@@ -50,7 +54,13 @@ export const landingCss = `
 .glassCard{ position:relative; z-index:1; background: rgba(17,17,17,0.7); backdrop-filter: blur(10px); }
 .hoverLift{ transition: transform .18s ease, border-color .18s ease; }
 .hoverLift:hover{ transform: translateY(-2px); border-color: rgba(0,229,160,0.22) !important; }
-.ctaGlow{ box-shadow: 0 18px 40px rgba(0,229,160,0.10); }
+.ctaGlow{
+  box-shadow: 0 18px 40px rgba(0,229,160,0.10);
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  color:#000 !important;
+}
 .chip{
   font-family: "DM Mono", monospace;
   font-size: 11px;
@@ -60,6 +70,30 @@ export const landingCss = `
   padding: 6px 10px;
   border-radius: 999px;
 }
+.productCard{position:relative;overflow:hidden;}
+.productCard::before{
+  content:"";position:absolute;inset:-1px;border-radius:16px;pointer-events:none;opacity:.9;
+  background:
+    radial-gradient(240px 140px at 10% 15%, rgba(0,229,160,0.10), transparent 55%),
+    radial-gradient(240px 140px at 95% 20%, rgba(77,159,255,0.10), transparent 55%);
+}
+.productBiz::before{
+  background:
+    radial-gradient(240px 140px at 8% 15%, rgba(77,159,255,0.14), transparent 55%),
+    radial-gradient(260px 160px at 92% 25%, rgba(181,123,238,0.10), transparent 60%);
+}
+.miniArt{
+  position:relative;height:92px;border:1px solid rgba(255,255,255,0.06);border-radius:18px;overflow:hidden;
+  background: rgba(17,17,17,0.45);backdrop-filter: blur(10px);
+}
+.miniRibbon{
+  position:absolute;left:-30%;width:160%;height:28px;border-radius:999px;filter: blur(.2px);opacity:.9;
+  transform: skewX(-10deg);mix-blend-mode: screen;
+  animation: ribbonFlow 9s ease-in-out infinite alternate, ribbonFloat 6s ease-in-out infinite;
+}
+.miniRibbon.r0{ top:14px; background: linear-gradient(90deg, transparent, rgba(0,229,160,0.30), rgba(255,255,255,0.08), transparent); animation-duration: 10s, 7s; }
+.miniRibbon.r1{ top:40px; background: linear-gradient(90deg, transparent, rgba(77,159,255,0.28), rgba(255,255,255,0.06), transparent); animation-duration: 12s, 6s; opacity:.85; }
+.miniRibbon.r2{ top:62px; background: linear-gradient(90deg, transparent, rgba(181,123,238,0.22), rgba(255,255,255,0.05), transparent); animation-duration: 14s, 8s; opacity:.75; }
 .stepCard{
   border: 1px solid rgba(255,255,255,0.08);
   background: rgba(18,18,18,0.55);
@@ -77,6 +111,8 @@ export const landingCss = `
 @keyframes pulseRing{ 0%{ box-shadow: 0 0 0 0 rgba(0,229,160,0.35); } 70%{ box-shadow: 0 0 0 14px rgba(0,229,160,0); } 100%{ box-shadow: 0 0 0 0 rgba(0,229,160,0); } }
 @keyframes shimmerLine{ 0%{ opacity: .35; transform: translateX(-100%); } 100%{ opacity: .9; transform: translateX(100%); } }
 @keyframes orbDrift{ 0%,100%{ transform: translate(0,0) scale(1); } 50%{ transform: translate(12px,-18px) scale(1.05); } }
+@keyframes ribbonFlow{ 0%{ transform: translate3d(-20%,0,0) skewX(-10deg); } 100%{ transform: translate3d(20%,0,0) skewX(-10deg); } }
+@keyframes ribbonFloat{ 0%,100%{ transform: translateY(0); } 50%{ transform: translateY(-10px); } }
 .landingShell{position:relative;width:100%;}
 .landingNav{
   position:sticky;top:0;z-index:20;
@@ -105,43 +141,25 @@ export const landingCss = `
 .heroTitleAccent{display:block;color:#00e5a0;text-shadow:0 0 40px rgba(0,229,160,0.18);min-height:1.05em;}
 .heroWordSwap{display:inline-block;animation: wordSwap 2.85s cubic-bezier(.2,.8,.2,1) both;}
 .heroSubLead{margin-top:clamp(22px,3.5vw,36px);max-width:36rem;}
-.heroSubMuted{font-family:"DM Mono",monospace;font-size:clamp(11px,1.1vw,13px);line-height:1.75;color:#9a9a9a;margin:0;}
+.heroSubMuted{font-family:"Syne",sans-serif;font-size:clamp(13px,1.3vw,15px);line-height:1.7;color:#a9a9a9;margin:0;max-width:42rem;}
 .heroStatRail{margin-top:clamp(28px,4vw,48px);}
-.heroStatGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;}
-.heroStatTile{
-  position:relative;border:1px solid rgba(255,255,255,0.06);
-  border-radius:14px;padding:14px 16px;
-  background:linear-gradient(145deg,rgba(18,18,18,.75),rgba(15,15,15,.48));
-  overflow:hidden;
+.heroTrustGrid{display:grid;gap:10px;margin-top:clamp(20px,3.5vw,30px);}
+.heroTrustRow{
+  display:grid;grid-template-columns:90px 1fr;gap:14px;align-items:baseline;
+  border-top:1px solid rgba(255,255,255,0.06);
+  padding-top:10px;
 }
-.heroStatTile::after{
-  content:"";position:absolute;inset:auto 0 0 0;height:2px;background:linear-gradient(90deg,transparent,#00e5a0,#4d9fff,transparent);
-  opacity:.45;
+.heroTrustKey{
+  font-family:"DM Mono",monospace;font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#00e5a0;
 }
-.heroStatVal{font-family:Syne,sans-serif;font-weight:800;font-size:1.05rem;color:#fff;letter-spacing:-.02em;}
-.heroStatLbl{font-family:"DM Mono",monospace;font-size:10px;color:#555;text-transform:uppercase;letter-spacing:2px;margin-top:6px;}
-.marqueeOuter{
-  margin-top:clamp(36px,5vw,64px);border-top:1px solid rgba(255,255,255,0.06);
-  border-bottom:1px solid rgba(255,255,255,0.06);
-  overflow:hidden;background:rgba(13,13,13,0.5);
+.heroTrustVal{
+  font-family:"DM Mono",monospace;font-size:12px;line-height:1.75;color:#8e8e8e;
 }
-.marqueeFade{pointer-events:none;position:relative;}
-.marqueeFade::before,.marqueeFade::after{
-  content:"";position:absolute;top:0;bottom:0;width:64px;z-index:2;pointer-events:none;
-}
-.marqueeFade::before{left:0;background:linear-gradient(90deg,#0d0d0d,transparent);}
-.marqueeFade::after{right:0;background:linear-gradient(270deg,#0d0d0d,transparent);}
-.marqueeTrack{
-  display:flex;width:max-content;padding:14px 0;gap:52px;
-  animation: marquee 42s linear infinite;
-}
-.marqueeFade:hover .marqueeTrack{animation-play-state:paused;}
-.marqueeItem{font-family:"DM Mono",monospace;font-size:11px;color:#9a9a9a;text-transform:uppercase;letter-spacing:3px;white-space:nowrap;}
 .heroOrbs{position:absolute;inset:0;pointer-events:none;z-index:0;overflow:hidden;}
 .heroOrbWrap{position:relative;}
 .heroOrb{position:absolute;top:-120px;right:-12%;width:min(460px,80vw);height:460px;border-radius:50%;
   background:radial-gradient(circle,rgba(0,229,160,0.12) 0%,transparent 68%);
-  animation: orbDrift 14s ease-in-out infinite alternate;filter:blur(2px);}
+  animation: orbDrift 18s ease-in-out infinite alternate;filter:blur(2px);}
 .heroOrbBlue{top:12%;left:-22%;background:radial-gradient(circle,rgba(77,159,255,0.13) 0%,transparent 70%);animation-duration:17s;}
 .sectionLabel{font-family:"DM Mono",monospace;font-size:10px;letter-spacing:3px;text-transform:uppercase;color:#555;margin:0;}
 .sectionLead{margin:.6rem 0 0;font-size:clamp(1.3rem,2.4vw,1.85rem);font-weight:850;letter-spacing:-.03em;line-height:1.15;color:#e8e8e8;}
@@ -162,6 +180,7 @@ export const landingCss = `
 .bentoTit{margin:12px 0 0;font-size:1.1rem;font-weight:800;color:#fff;letter-spacing:-.03em;line-height:1.2;}
 .bentoTxt{margin:12px 0 0;font-family:"DM Mono",monospace;font-size:12px;line-height:1.75;color:#888;}
 .paletteStrip{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;}
+.paletteStripTight{ margin-top: 0; opacity: .75; }
 .paletteSw{border-radius:999px;height:10px;width:62px;background:linear-gradient(90deg,var(--c1),var(--c2));opacity:.85;border:1px solid rgba(255,255,255,0.12);}
 .segmentGrid{display:grid;gap:12px;margin-top:clamp(20px,3vw,32px);}
 @media(min-width:900px){.segmentGrid{grid-template-columns:repeat(3,1fr);}}
@@ -206,10 +225,11 @@ export const landingCss = `
 .dualPathTxt{margin-top:14px;font-family:"DM Mono",monospace;font-size:12px;line-height:1.8;color:#9a9a9a;}
 
 @media (prefers-reduced-motion: reduce) {
- .landingBg, .landingGridOverlay, .floatCard, .marqueeTrack, .landingPulseDot, .heroWordSwap { animation: none !important; }
+ .landingBg, .landingGridOverlay, .landingPulseDot, .heroWordSwap { animation: none !important; }
+ .miniRibbon{ animation: none !important; }
+ .reveal, .revealItem{ transition: none !important; transform: none !important; opacity: 1 !important; }
  .ctaPrimary.ctaEnhanced::after { display: none; }
  .hoverLift:hover, .stepCardEnhanced:hover, .bentoCell:hover { transform: none; }
- .marqueeFade:hover .marqueeTrack { animation-play-state: running !important; }
 }
 `;
 
