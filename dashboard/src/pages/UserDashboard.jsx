@@ -11,26 +11,34 @@ export default function UserDashboard() {
   const [activeTab, setActiveTab] = useState("overview");
   const [walletConnected, setWalletConnected] = useState(false);
   const [walletAddress, setWalletAddress] = useState("");
+  const [authChecked, setAuthChecked] = useState(false);
+  const [hasChromeStorage, setHasChromeStorage] = useState(false);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   useEffect(() => {
-    // Try to read from chrome extension storage
-    if (typeof chrome !== "undefined" && chrome.storage) {
-      chrome.storage.local.get(["sessions", "totalEarnings"], (result) => {
-        processData(result.sessions || {}, result.totalEarnings || 0);
-      });
-    } else {
-      // Demo data for development
-      const demoSessions = {
-        [getTodayKey()]: {
-          "instagram.com": { domain: "instagram.com", category: "social", totalSeconds: 47880, visits: 23, earned: 0.053 },
-          "github.com": { domain: "github.com", category: "technology", totalSeconds: 5400, visits: 8, earned: 0.0045 },
-          "youtube.com": { domain: "youtube.com", category: "entertainment", totalSeconds: 3420, visits: 5, earned: 0.0028 },
-          "amazon.in": { domain: "amazon.in", category: "shopping", totalSeconds: 1800, visits: 3, earned: 0.04 },
-          "leetcode.com": { domain: "leetcode.com", category: "education", totalSeconds: 2700, visits: 4, earned: 0.0015 },
-        },
-      };
-      processData(demoSessions, 0.77);
+    // This page is intended to be opened in Chrome with the extension installed.
+    // When chrome.storage is unavailable (or user is signed out), do NOT show demo data.
+    const canUseChromeStorage = typeof chrome !== "undefined" && !!chrome?.storage?.local;
+    setHasChromeStorage(canUseChromeStorage);
+
+    if (!canUseChromeStorage) {
+      setAuthChecked(true);
+      setIsLoggedIn(false);
+      return;
     }
+
+    chrome.storage.local.get(["isLoggedIn", "sessions", "totalEarnings"], (result) => {
+      const authed = !!result.isLoggedIn;
+      setIsLoggedIn(authed);
+      setAuthChecked(true);
+
+      if (!authed) {
+        processData({}, 0);
+        return;
+      }
+
+      processData(result.sessions || {}, result.totalEarnings || 0);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -97,6 +105,40 @@ export default function UserDashboard() {
 
   const dollars = Math.floor(totalEarnings);
   const cents = ((totalEarnings - dollars) * 100).toFixed(0).padStart(2, "0");
+
+  if (!authChecked) {
+    return (
+      <div style={styles.landingWrap}>
+        <div style={{ ...styles.card, maxWidth: 720, margin: "60px auto" }}>
+          <div style={styles.cardLabel}>Loading</div>
+          <div style={{ color: "#bbb", fontFamily: "DM Mono, monospace", fontSize: 12, lineHeight: 1.7 }}>
+            Checking extension session…
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!hasChromeStorage || !isLoggedIn) {
+    return (
+      <div style={styles.landingWrap}>
+        <div style={{ ...styles.card, maxWidth: 840, margin: "60px auto" }}>
+          <div style={styles.cardLabel}>Sign in required</div>
+          <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: -0.5, marginTop: 10 }}>
+            Open the Reclaim extension and sign in first.
+          </div>
+          <div style={{ marginTop: 14, color: "#888", fontFamily: "DM Mono, monospace", fontSize: 12, lineHeight: 1.8 }}>
+            This dashboard reads your data from the Chrome extension’s local storage. If you’re signed out (or the extension isn’t available in this tab),
+            you’ll be redirected here instead of seeing demo data.
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+            <a href="/" style={styles.ctaSecondary}>Back to landing</a>
+            <a href="/company" style={styles.ctaSecondary}>Reclaim Business</a>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={styles.app}>
