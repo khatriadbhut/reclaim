@@ -1,6 +1,6 @@
 # Reclaim — Project Status Document
-> Last updated: 2026-05-02
-> Version: 0.7.0
+> Last updated: 2026-05-04
+> Version: 0.8.0
 > Repo: https://github.com/khatriadbhut/reclaim
 
 ---
@@ -22,7 +22,7 @@ Reclaim is a self-data-selling platform where users monetize their browsing data
 | Browser Extension | Vanilla JS, WebExtension API (Manifest v3) |
 | Extension UI | HTML, CSS (inline), DM Mono + Syne fonts |
 | Dashboard Frontend | React + Vite (localhost:5173) |
-| Backend | Node.js + Express (localhost:3000) |
+| Backend | Node.js + Express 5 (localhost:3000) |
 | AI | Google Gemini API (gemini-2.5-flash) |
 | Database | PostgreSQL (planned — not needed for demo, add post-funding) |
 | Blockchain | Ethereum/Solana + MetaMask (planned — Sepolia testnet for demo) |
@@ -34,31 +34,68 @@ Reclaim is a self-data-selling platform where users monetize their browsing data
 
 ```
 reclaim/
+├── .env.example                 # Env template — see “Environment variables” below
+├── .gitignore
+├── README.md                    # Quick start, production URL checklist
+├── RECLAIM_STATUS.md            # This file
 ├── backend/
-│   ├── server.js          # Express server, Gemini API, all /api/* endpoints
+│   ├── .env.example             # Same template (copy either source to backend/.env)
 │   ├── package.json
-│   └── .env               # GEMINI_API_KEY, PORT
-├── extension/
-│   ├── icons/
-│   │   ├── icon16.png     # Coin+lock logo, #00ffaa on dark background
-│   │   ├── icon48.png
-│   │   └── icon128.png
-│   ├── popup/
-│   │   ├── popup.html     # Extension popup UI
-│   │   └── popup.js       # Popup logic, reads chrome.storage, calls /api/insight
-│   ├── onboarding/
-│   │   ├── onboarding.html  # First-run onboarding page (planned)
-│   │   └── onboarding.js    # Demographic capture + geolocation + ipapi fallback (planned)
-│   ├── background.js      # Service worker v3 — tab tracking, /api/extract, value-based earnings, /api/sync
-│   ├── content.js         # Content script — price extraction, breadcrumbs, scroll depth, search queries, page type
-│   └── manifest.json      # Manifest v3, permissions: tabs, storage, alarms, activeTab, scripting
-└── dashboard/
-    ├── index.html          # Loads Syne + DM Mono fonts, Vite entry
-    ├── src/
-    │   ├── App.jsx         # Full dashboard UI (overview, browsing, insights, wallet tabs)
-    │   └── main.jsx        # React entry point
-    └── package.json
+│   └── server.js                # Express: user + company APIs, Gemini, in-memory store
+├── dashboard/
+│   ├── .gitignore
+│   ├── README.md
+│   ├── eslint.config.js
+│   ├── index.html
+│   ├── package.json
+│   ├── vite.config.js
+│   ├── public/
+│   │   └── icons.svg
+│   └── src/
+│       ├── App.jsx              # Path-based routes: / → Landing, /user → UserDashboard, /company → CompanyDashboard
+│       ├── main.jsx
+│       ├── pages/
+│       │   ├── Landing.jsx
+│       │   ├── UserDashboard.jsx
+│       │   └── CompanyDashboard.jsx
+│       └── ui/
+│           └── constants.js     # BACKEND origin, shared styles, landing CSS
+└── extension/
+    ├── background.js            # Service worker: OAuth, extract, sync alarms, tab/session logic
+    ├── content.js               # Page signals → background
+    ├── generate_icons.py        # Optional asset helper
+    ├── manifest.json            # MV3: tabs, storage, alarms, identity, scripting, content_scripts
+    ├── icons/
+    │   ├── icon16.png
+    │   ├── icon48.png
+    │   └── icon128.png
+    ├── onboarding/
+    │   ├── onboarding.html
+    │   └── onboarding.js        # T&C, Google sign-in, demographics, location, sync
+    ├── popup/
+    │   ├── popup.html
+    │   └── popup.js
+    └── settings/
+        ├── settings.html
+        └── settings.js
 ```
+
+---
+
+## Environment variables (.env) — what’s the “issue”?
+
+There is **no broken behavior**: the API loads **`backend/.env`** only (see `server.js` `dotenv.config`).
+
+What confuses people is **two valid ways to create that file**:
+
+| Approach | Command |
+|---|---|
+| From repo root | `cp .env.example backend/.env` then edit `backend/.env` |
+| From `backend/` | `cd backend && cp .env.example .env` then edit `.env` |
+
+Both templates (root `.env.example` and `backend/.env.example`) are aligned. Pick one workflow and stick to it.
+
+**Company dashboard** additionally needs `COMPANY_*` variables in `backend/.env` (see `.env.example`). Without them, `/company` OAuth will not work.
 
 ---
 
@@ -149,7 +186,7 @@ Companies don't need users' IP addresses or names. The flow works via:
 
 ## What Has Been Done
 
-### 1. Browser Extension — Content Script (`content.js`) ✅ NEW
+### 1. Browser Extension — Content Script (`content.js`) ✅
 A production-grade content script injected into every page via Manifest v3 `content_scripts`. Runs at `document_idle`.
 
 - **Device type detection** — UA-based: mobile / tablet / desktop
@@ -166,50 +203,56 @@ A production-grade content script injected into every page via Manifest v3 `cont
 - **Scroll depth tracking** — live tracking with 2-second debounce, sends on scroll / page unload / every 30 seconds
 - **Messaging** — sends all signals to `background.js` via `chrome.runtime.sendMessage({ type: "CONTENT_DATA", ... })`
 
-### 2. Browser Extension — Background Service Worker (`background.js` v3) ✅ UPGRADED
+### 2. Browser Extension — Background Service Worker (`background.js`) ✅
 - **Tab tracking** — `chrome.tabs.onActivated`, `onUpdated`, `windows.onFocusChanged` save session on tab switch
 - **Periodic saves** — alarm every 30 seconds
-- **Structured extraction** — calls `POST /api/extract` (not `/api/categorize`) for domain + title; 24hr cache in `chrome.storage.local` keyed by `ext_{domain}_{title_prefix}` — persists across Chrome restarts to prevent Gemini quota burn
+- **Structured extraction** — calls `POST /api/extract` for domain + title; 24hr cache in `chrome.storage.local` keyed by domain/title prefix — persists across Chrome restarts to reduce Gemini quota use
 - **Content script integration** — listens for `CONTENT_DATA` messages, accumulates into `pendingContentData[domain]`, merges on next `saveSession`
 - **Value-based earnings model** (see Earnings Rate Card below)
-- **Backend sync** — `POST /api/sync` called every 5 minutes via alarm with full sessions + totalEarnings + profile
-- **Session data stored per domain per day:**
-  - `domain`, `category`, `totalSeconds`, `visits`, `earned`
-  - `brand`, `product`, `product_type`, `price_range`, `intent_score`, `keywords`, `search_type`
-  - `location`, `job_title`, `travel_route`, `property_type`
-  - `searchQueries[]`, `maxScrollDepth`, `pricesFound[]`, `breadcrumbs[]`, `pageTypes[]`
-  - `deviceType`, `timeOfDay`, `visitHours[]`
-- **Legacy data normalization** — handles old session objects missing new fields (arrays coerced, numbers defaulted)
-- **Premium brands list** — 18 brands (Apple, BMW, Sony, Samsung, Nike, etc.) flagged for bonus earnings
+- **Backend sync** — `POST /api/sync` on a 5-minute alarm with sessions + totalEarnings + profile
+- **Google sign-in** — `chrome.identity` + `POST /api/auth/google`
+- **Session fields** per domain per day: domain, category, time, visits, earned, extract fields, content signals, device/time-of-day metadata
+- **Premium brands list** — bonus earnings for listed luxury / high-signal brands
 
-### 3. Extension Manifest (`manifest.json`) ✅ UPDATED
-- Added `scripting` permission
-- Added `content_scripts` block: `content.js` injected at `document_idle` on `<all_urls>`
+### 3. Onboarding + settings ✅
+- **`onboarding/`** — multi-step: T&C, Google sign-in (via background message), demographics, location (geolocation + fallback), success; persists profile and calls `/api/auth/user` + `/api/sync` as appropriate
+- **`settings/`** — profile and account-related UI tied to same backend URLs
+- **Install hook** — `onInstalled` opens onboarding tab (see `background.js`)
 
-### 4. Extension Popup UI
-- Shows **total earnings** (all time) and **today's earnings**
-- **Category bars** — sorted by time, color-coded per category
-- **AI Insight box** — calls `/api/insight` with today's category summary; 10-minute client-side cache
-- **Dashboard button** — opens `localhost:5173`
-- Fonts: Syne + DM Mono | Accent: `#00e5a0`
+### 4. Extension Manifest (`manifest.json`) ✅
+- MV3 service worker, `content_scripts`, `identity`, `scripting`, `host_permissions` including API origin in dev
 
-### 5. Extension Icons
-- Logo: coin with dollar sign + padlock, outline style, `#00ffaa` on dark background
-- Sizes: 16×16, 48×48, 128×128 PNG
+### 5. Extension Popup UI ✅
+- Earnings, category bars, AI insight (`POST /api/insight`), link to dashboard (`localhost:5173`)
 
-### 6. Backend (`server.js`) ✅ UPGRADED
+### 6. Extension Icons ✅
+- 16 / 48 / 128 PNG under `extension/icons/`
 
-All endpoints:
+### 7. Backend (`server.js`) ✅
 
-| Method | Endpoint | Status | Description |
-|---|---|---|---|
-| POST | `/api/categorize` | ✅ | Legacy — domain + title → category only. Kept for backward compat. |
-| POST | `/api/extract` | ✅ NEW | Full structured extraction via Gemini: category, brand, product, intent_score, keywords, price_range, search_type, location, job_title, travel_route, property_type. MD5-keyed in-memory cache. |
-| POST | `/api/sync` | ✅ NEW | Receives full sessions + totalEarnings + profile from extension. Stored in-memory. |
-| GET | `/api/profile/:userId` | ✅ NEW | Returns aggregated behavioral profile: topCategories, topBrands, segments, peakHour, isNightOwl, totalBrowsingHours, searchQueries, deviceType |
-| GET | `/api/packages` | ✅ NEW | Returns 6 advertiser data packages with signals, dataFields, sampleData (3 rows each), pricing, formats |
-| POST | `/api/insight` | ✅ | Gemini-generated 2-sentence insight from browsing summary. Category fallbacks on rate limit. |
-| GET | `/api/health` | ✅ | Cache sizes + user count |
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/auth/google` | Chrome identity token → user record |
+| POST | `/api/auth/user` | Upsert user demographics / profile fields |
+| GET | `/api/auth/user/:userId` | Read user |
+| GET | `/api/company/auth/google/start` | Start web OAuth for companies |
+| GET | `/api/company/auth/google/callback` | OAuth callback, session cookie |
+| GET | `/api/company/auth/me` | Current company |
+| POST | `/api/company/auth/logout` | Clear company session |
+| POST | `/api/categorize` | Legacy category-only |
+| POST | `/api/extract` | Structured Gemini extraction + cache |
+| POST | `/api/sync` | Ingest sessions + earnings + profile from extension |
+| GET | `/api/profile/:userId` | Aggregated profile + segments |
+| GET | `/api/packages` | Public package catalog |
+| POST | `/api/purchase` | Purchase flow (see implementation) |
+| GET | `/api/company/packages` | Authenticated package list for company UI |
+| GET | `/api/company/purchases` | Company purchase history |
+| POST | `/api/company/purchase` | Company purchase |
+| GET | `/api/company/download/:purchaseId` | Download export |
+| POST | `/api/insight` | Short Gemini insight from summary |
+| GET | `/api/health` | Health / counts |
+
+**Storage:** in-memory maps for users, sessions, companies, purchases (resets on server restart).
 
 **Auto-assigned audience segments** (in `/api/profile`):
 - `high_intent_shopper` — shopping > 30 min
@@ -220,190 +263,35 @@ All endpoints:
 - `travel_planner` — travel > 10 min
 - `night_owl_shopper` — isNightOwl + shopping > 10 min
 
-**6 Advertiser Data Packages** (from `/api/packages`):
-
-| Package | Price | strongerAfterOnboarding |
-|---|---|---|
-| High Intent Shoppers | $299 | No |
-| Cross-Platform Behavioral Profile | $399 | No |
-| Finance Decision Makers | $499 | Yes — occupation 3x value lift |
-| Tech Early Adopters | $199 | No |
-| Real Estate Prospects | $449 | Yes — city makes it geo-targeted |
-| Night Owl Impulse Buyers | $179 | No |
-
-### 7. Dashboard (React + Vite)
-- **Overview tab** — total earnings, top category, sites visited, AI insight, today's category breakdown
-- **Browsing tab** — domain table with category pill, time, visits, earned
-- **Insights tab** — AI insight card, data value breakdown by category
-- **Wallet tab** — balance display, MetaMask connect button, withdraw placeholder
-- Sidebar navigation with status dot
-- Styling: `#0d0d0d` background, `#00e5a0` accent, Syne + DM Mono fonts
-- **⚠️ Currently using demo/hardcoded data** — not yet connected to backend or extension storage
+### 8. Dashboard (React + Vite) ✅
+- **`Landing.jsx`** — marketing landing at `/`
+- **`UserDashboard.jsx`** at `/user` — reads **`chrome.storage.local`** when opened with extension APIs (same browser as extension); otherwise **demo sessions** for dev; **AI insight** always calls `BACKEND + /api/insight` when categories exist
+- **`CompanyDashboard.jsx`** at `/company` — Google OAuth redirect flow, cookie auth, packages, purchases, download links — all against `BACKEND`
+- Shared styling via `ui/constants.js` (`#0d0d0d`, `#00e5a0`, Syne + DM Mono)
 
 ---
 
 ## What Has To Be Done (Priority Order)
 
-### Priority 1 — Onboarding Flow ⭐ BLOCKS PACKAGE VALUE
-**Status:** Not started
-**Why first:** Every package has null demographic fields until onboarding runs. Finance Decision Makers and Real Estate Prospects are worth 3–10x more with occupation + city. This is the single highest-leverage task before the company dashboard launch.
+### Priority 1 — Production readiness
+- **PostgreSQL** (or other durable store) — replace in-memory `users` / `userSessions` / company data
+- **Rate limiting** — protect Gemini and auth endpoints
+- **Deploy** — align `BACKEND_URL` / `BACKEND` / `manifest.json` host permissions / `COMPANY_OAUTH_REDIRECT_URL` / `COMPANY_DASHBOARD_ORIGIN` with real hosts (see root `README.md`)
 
-**Flow:**
-1. `chrome.runtime.onInstalled` fires → background.js opens `onboarding.html` in a new tab
-2. **Step 1 — T&C / Consent** → user must click "I Agree" to proceed — no passive acceptance
-3. **Step 2 — Demographics** → age range, gender, occupation
-4. **Step 3 — Location** → geolocation request with ipapi fallback
-5. On complete → data saved to `chrome.storage.local` → synced to backend via `/api/sync`
+### Priority 2 — User dashboard without extension context
+- Optional: pass `userId` via query string and load **`GET /api/profile/:userId`** + synced session view so `/user` works in a normal browser tab for demos
 
-**T&C / Consent screen must disclose:**
-- What is collected: browsing behavior (domains, time spent, categories, brands, search queries), demographics you provide, and approximate location
-- How it's used: anonymized, aggregated into audience segments, sold to advertisers and market researchers
-- Location disclosure: "We use your city-level location — from GPS if granted, or estimated from your IP address if not — to increase your data's value and your earnings"
-- What you get: a share of every data sale, paid to your Reclaim wallet
-- Link to full Terms of Service (placeholder page is fine for demo)
+### Priority 3 — Historical data and charts
+- **`GET /api/data/:userId`** (or similar) for sessions by day; charts in dashboard (e.g. recharts)
 
-**Why this matters:** This consent screen is Reclaim's core legal and ethical differentiator. Meta, Google, and Instagram do all of the above silently. Reclaim shows users exactly what's being collected and pays them for it. This screen is a feature — use it in the YC demo narrative.
+### Priority 4 — AI suggestions (product roadmap)
+- **`POST /api/suggestions`** + surfaces in popup and dashboard insights
 
-**Fields collected:**
+### Priority 5 — Withdrawals / on-chain payouts
+- UI currently labels blockchain / withdraw as **coming soon**; implement when product/legal ready
 
-| Field | Input Type | Values |
-|---|---|---|
-| `age_range` | Radio | Under 18 / 18–24 / 25–34 / 35–44 / 45+ |
-| `gender` | Radio | Male / Female / Other / Prefer not to say |
-| `occupation` | Dropdown | Student / Salaried / Business Owner / Freelancer / Other |
-
-**Location strategy:**
-1. Request `navigator.geolocation` with a clear "this helps us pay you more" explanation
-2. If granted → use coords → call `https://ipapi.co/json/` with coords to reverse geocode → extract `city`, `region`, `country`
-3. If denied → silently call `https://ipapi.co/json/` (IP-based) → extract same fields, no second prompt to user
-4. Store as `userLocation: { city, region, country, source: "gps" | "ip" }`
-
-**Storage schema (chrome.storage.local):**
-```json
-{
-  "userProfile": {
-    "age_range": "18-24",
-    "gender": "M",
-    "occupation": "Student",
-    "onboardingComplete": true,
-    "onboardingDate": "2026-05-02"
-  },
-  "userLocation": {
-    "city": "Roorkee",
-    "region": "Uttarakhand",
-    "country": "India",
-    "source": "ip"
-  }
-}
-```
-
-**What changes after onboarding:**
-- `/api/sync` already sends `profile` + `location` to backend — no backend changes needed
-- `/api/profile/:userId` already returns this data — no backend changes needed
-- Package exports will now include real city + occupation instead of null
-
-**Files to add/change:**
-- `extension/onboarding/onboarding.html` — styled form matching extension aesthetic (`#0d0d0d`, `#00e5a0`, Syne + DM Mono)
-- `extension/onboarding/onboarding.js` — form logic, geolocation, ipapi call, storage write
-- `extension/background.js` — add `chrome.runtime.onInstalled` listener, check `onboardingComplete` flag before opening
-
----
-
-### Priority 2 — Company Dashboard + Data Selling ⭐ CORE REVENUE FEATURE
-**Status:** Backend `/api/packages` done ✅ — everything else not started
-
-**What needs to be built:**
-
-#### 2a. Company Dashboard Frontend (`Company.jsx`)
-A separate route (`/company`) — the storefront where companies browse and buy packages.
-
-**UI sections:**
-- Header: "Buy Audience Data" with tagline
-- Package cards grid — each card shows: name, tagline, userCount, price, signals list, formats, `strongerAfterOnboarding` badge if applicable
-- Each card has a "Preview Data" button → opens modal with the 3 sampleData rows as a table
-- "Purchase" button → triggers purchase flow
-- Post-purchase: download button for CSV or JSON
-
-**Files to add:**
-- `dashboard/src/Company.jsx`
-- `dashboard/src/App.jsx` — add `/company` route
-
-#### 2b. Real Package Data Export (`/api/purchase`)
-When a company purchases a package, they should download **real aggregated user data** from the system, not hardcoded samples.
-
-**New backend endpoint: `POST /api/purchase`**
-```json
-Request:  { "packageId": "finance_decision_makers", "format": "csv" }
-Response: file download (CSV or JSON)
-```
-
-**How each package maps to real data (what fields to pull from stored sessions):**
-
-**High Intent Shoppers** — filter users where `shopping` sessions exist with `intent_score >= 7`. Export: `user_id`, `intent_score` (max), `top_brands` (from session.brand), `search_queries` (from session.searchQueries), `prices_viewed` (from session.pricesFound), `breadcrumbs`, `page_types` (from session.pageTypes), `scroll_depth` (session.maxScrollDepth), `visit_frequency` (session.visits), `age_range`, `gender`, `city`, `device`
-
-**Cross-Platform Behavioral Profile** — all users with 3+ categories browsed. Export: `user_id`, `category_distribution` (% breakdown from sessions), `top_brands`, `all_search_queries`, `active_hours` (from visitHours), `peak_hour`, `device`, `avg_scroll_depth`, `total_browsing_hours`, `age_range`, `gender`, `occupation`, `city`
-
-**Finance Decision Makers** — filter users where `finance` sessions exist with totalSeconds > 900. Export: `user_id`, `finance_platforms_visited` (domains in finance category), `search_queries`, `intent_score`, `finance_products_researched` (keywords from finance sessions), `visit_frequency`, `age_range`, `gender`, `occupation`, `city`, `device`
-
-**Tech Early Adopters** — filter users where `technology` sessions > 1800 seconds. Export: `user_id`, `tech_tools_used` (domains in tech category), `ai_tools_used` (claude.ai, openai.com etc from sessions), `search_queries`, `dev_platforms_visited` (github, stackoverflow etc), `tech_browsing_hours`, `device`, `age_range`, `gender`, `occupation`, `city`
-
-**Real Estate Prospects** — filter users with `realestate` sessions. Export: `user_id`, `property_platforms_visited`, `search_queries`, `property_types` (from session.property_type), `locations_searched` (from session.location), `intent_score`, `visit_frequency`, `age_range`, `gender`, `occupation`, `city`, `device`
-
-**Night Owl Impulse Buyers** — filter users where `visitHours` contains hours 22–2 AND shopping/entertainment sessions exist. Export: `user_id`, `peak_shopping_hours` (late-night visitHours), `device`, `late_night_categories`, `late_night_brands`, `late_night_search_queries`, `avg_session_duration_night`, `age_range`, `gender`, `city`
-
-**Files to change:**
-- `backend/server.js` — add `POST /api/purchase` with per-package filter + export logic. CSV generation using manual string building (no new dependencies). JSON just `res.json()`.
-
-#### 2c. Live userCount per package
-Currently `userCount` is hardcoded. After `/api/sync` starts receiving real users, the packages endpoint should compute real counts.
-- `backend/server.js` — in `GET /api/packages`, compute `userCount` per package by running the same filters against `userSessions` in memory
-
----
-
-### Priority 3 — Connect Dashboard to Real Data
-**Status:** Not started
-**What:** Dashboard reads live data from backend instead of hardcoded demo values.
-**Files to change:**
-- `dashboard/src/App.jsx` — replace demo data with `fetch` calls to `GET /api/profile/:userId`
-- `extension/popup/popup.js` — expose `userId` via `chrome.storage.local` so dashboard can read same ID
-**Note:** `/api/sync` and `/api/profile` are already built. This is a frontend-only task.
-
----
-
-### Priority 4 — Historical Data & Charts
-**Status:** Not started
-**Files to change:**
-- `backend/server.js` — `/api/data/:userId` returns all sessions by date
-- `dashboard/src/App.jsx` — add recharts line/bar chart to overview/insights tab
-
----
-
-### Priority 5 — AI Suggestions Feature
-**Status:** Not started
-**Files to add:**
-- `backend/server.js` — `POST /api/suggestions` using Gemini with full browsing profile as context
-- `extension/popup/popup.js` — suggestions section in popup
-- `dashboard/src/App.jsx` — suggestions feed on insights tab
-
----
-
-### Priority 6 — User Authentication
-**Status:** Not started. Not needed for single-user demo.
-
----
-
-### Priority 7 — PostgreSQL Database
-**Status:** Not started — intentionally deferred until post-funding.
-
----
-
-### Priority 8 — Blockchain / Wallet Integration
-**Status:** UI placeholder only (Connect Wallet button exists, non-functional).
-
----
-
-### Priority 9 — Admin Panel
-**Status:** Not started. Needs more research before implementation.
+### Priority 6 — Admin panel
+- Not started; needs product spec
 
 ---
 
@@ -411,21 +299,19 @@ Currently `userCount` is hardcoded. After `/api/sync` starts receiving real user
 
 | Issue | Location | Priority | Status |
 |---|---|---|---|
-| Dashboard uses demo data, not real extension data | `dashboard/src/App.jsx` | High | Open |
-| Settings page (`/settings`) not built | dashboard | Low | Open |
+| User `/user` page uses demo data when `chrome.storage` unavailable | `dashboard/src/pages/UserDashboard.jsx` | Medium | Open |
 | No error boundary in React dashboard | `dashboard/src/App.jsx` | Low | Open |
-| No rate limiting on API endpoints — can burn Gemini quota | `backend/server.js` | Medium | Open |
-| `generate_icons.py` in extension root — should move to `/scripts` | repo structure | Low | Open |
-| Extension doesn't handle offline backend gracefully | `extension/background.js` | Low | Open |
-| `/api/categorize` returns only category (no structured data) | `backend/server.js` | High | ✅ Resolved — `/api/extract` added |
-| Gemini quota burst on Chrome restart (no persistent cache) | `extension/background.js` | Medium | ✅ Resolved — 24hr cache in chrome.storage.local |
-| Legacy session data missing new fields | `extension/background.js` | Medium | ✅ Resolved — normalization added |
+| No rate limiting on API — can burn Gemini quota | `backend/server.js` | Medium | Open |
+| `popup.js` hardcodes API origin in one `fetch` | `extension/popup/popup.js` | Low | Open |
+| Extension offline / backend down — partial error messaging only | `extension/*` | Low | Open |
+| `/api/categorize` legacy | `backend/server.js` | Low | Superseded by `/api/extract` |
+| Extract cache in `chrome.storage.local` | `extension/background.js` | — | ✅ Mitigates quota burst |
 
 ---
 
 ## Earnings Rate Card
 
-### Current Model — Value-Based (live in background.js v3)
+### Current Model — Value-Based (live in background.js)
 
 **Base Rate (by category, per hour):**
 
@@ -462,11 +348,24 @@ Currently `userCount` is hardcoded. After `/api/sync` starts receiving real user
 
 ## Environment Variables
 
-```
-# backend/.env
+Create **`backend/.env`** (never commit secrets). Minimum for extension + user insight:
+
+```env
 GEMINI_API_KEY=your_key_here
 PORT=3000
 ```
+
+For **Reclaim Business** (`/company`):
+
+```env
+COMPANY_GOOGLE_CLIENT_ID=
+COMPANY_GOOGLE_CLIENT_SECRET=
+COMPANY_OAUTH_REDIRECT_URL=http://localhost:3000/api/company/auth/google/callback
+COMPANY_COOKIE_SECRET=
+COMPANY_DASHBOARD_ORIGIN=http://localhost:5173
+```
+
+Full variable list and comments: **`.env.example`** (repo root or `backend/.env.example`).
 
 ---
 
@@ -475,35 +374,37 @@ PORT=3000
 ```bash
 # Terminal 1 — Backend
 cd reclaim/backend
-node server.js
+cp .env.example .env
+# Edit .env — set GEMINI_API_KEY (and COMPANY_* if using /company)
+npm install
+npm start
 
 # Terminal 2 — Dashboard
 cd reclaim/dashboard
+npm install
 npm run dev
 
-# Extension
-# Load reclaim/extension as unpacked extension in chrome://extensions
-# After any background.js or content.js change: chrome://extensions → Reclaim → refresh icon
-# To clear extension storage: Service Worker console → chrome.storage.local.clear()
+# Extension — chrome://extensions → Load unpacked → reclaim/extension
+# After background.js or content.js changes: reload extension
+# Clear storage: DevTools on service worker → chrome.storage.local.clear()
 ```
 
 ---
 
 ## Notes for AI Agents
 
-- Always read this document before making changes to understand current state
-- Update the relevant section after completing any task
-- The extension uses Manifest v3 — no background pages, only service workers
-- All dashboard styling uses inline JS style objects (no CSS files) — keep consistent
-- Extension accent color: `#00e5a0`, background: `#0d0d0d`, fonts: Syne + DM Mono
-- Gemini model: `gemini-2.5-flash` (fallback to `gemini-2.0-flash` on quota issues)
-- Backend: port 3000 | Dashboard: port 5173
-- Do not add new npm dependencies without checking necessity first
-- Known domains list in `server.js` avoids Gemini calls for top 80+ sites — always check/update this list before adding Gemini calls
-- PostgreSQL is intentionally deferred — do not add it until explicitly instructed
-- In-memory storage is intentional for current phase
-- When Gemini hits rate limits (429/503), always fall back gracefully — never crash
-- User IDs are generated as `usr_` + random string — no real PII stored
-- `content.js` runs at `document_idle` on all URLs — keep it lightweight, no heavy DOM operations
-- Extract cache is persisted in `chrome.storage.local` (not just memory) — survives Chrome restarts
-- `pendingContentData` in background.js is in-memory only — clears on service worker restart (acceptable)
+- Read this document before large changes
+- Update the relevant section after completing a task
+- Manifest v3 — service worker only for background
+- Dashboard styling: inline / `constants.js` objects — keep visual consistency
+- Extension accent: `#00e5a0`, background: `#0d0d0d`, fonts: Syne + DM Mono
+- Gemini model in code: **`gemini-2.5-flash`** — handle 429/503 gracefully in all call sites
+- Backend: port **3000** | Dashboard dev: **5173**
+- Avoid new npm dependencies unless necessary
+- `KNOWN_DOMAINS` in `server.js` reduces Gemini calls — update with care
+- PostgreSQL deferred until explicitly requested
+- In-memory server storage is intentional for the current phase
+- User IDs: `usr_` prefix + random string
+- `content.js` must stay lightweight (`document_idle`, all URLs)
+- Extract cache persists in `chrome.storage.local`
+- `pendingContentData` in background is in-memory only (clears on worker restart)
