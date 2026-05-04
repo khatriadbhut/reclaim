@@ -16,6 +16,10 @@ function formatTime(seconds) {
 
 function formatMoney(amount) { return amount.toFixed(4); }
 
+async function openUserDashboardTab() {
+  await chrome.runtime.sendMessage({ type: "OPEN_USER_DASHBOARD" });
+}
+
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
 
 async function checkAuthAndRender() {
@@ -52,6 +56,23 @@ function showLoggedIn(state) {
   });
 
   loadData();
+
+  const dashboardBtn = document.getElementById("dashboardBtn");
+  const settingsBtn = document.getElementById("settingsBtn");
+  if (dashboardBtn && !dashboardBtn.dataset.reclaimBound) {
+    dashboardBtn.dataset.reclaimBound = "1";
+    dashboardBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      void openUserDashboardTab().catch((err) => console.error("Reclaim: open dashboard", err));
+    });
+  }
+  if (settingsBtn && !settingsBtn.dataset.reclaimBound) {
+    settingsBtn.dataset.reclaimBound = "1";
+    settingsBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      chrome.tabs.create({ url: chrome.runtime.getURL("settings/settings.html"), active: true });
+    });
+  }
 }
 
 // ─── SIGN IN FROM POPUP ───────────────────────────────────────────────────────
@@ -166,16 +187,6 @@ async function renderInsight(categories) {
     insightEl.classList.remove("loading");
   }
 }
-
-// ─── FOOTER BUTTONS ───────────────────────────────────────────────────────────
-
-document.getElementById("dashboardBtn")?.addEventListener("click", () => {
-  chrome.tabs.create({ url: "http://localhost:5173/user" });
-});
-
-document.getElementById("settingsBtn")?.addEventListener("click", () => {
-  chrome.tabs.create({ url: chrome.runtime.getURL("settings/settings.html") });
-});
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 

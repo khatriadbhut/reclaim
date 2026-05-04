@@ -174,9 +174,9 @@ const CSS = `
   }
 
   .rclLogo {
-    font-family: 'Space Mono', monospace;
-    font-size: 22px; font-weight: 700;
-    letter-spacing: -1px; color: var(--g);
+    font-family: "Syne", sans-serif;
+    font-size: 22px; font-weight: 800;
+    letter-spacing: -0.5px; color: var(--g);
     text-decoration: none;
   }
   .rclLogo span { color: #f0f0f0; }

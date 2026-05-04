@@ -424,22 +424,38 @@ document.getElementById("doneBtn").addEventListener("click", async () => {
   const userId = authData.userId || stored.userId;
 
   try {
-    await fetch(`${BACKEND_URL}/api/sync`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId,
-        sessions: stored.sessions || {},
-        totalEarnings: stored.totalEarnings || 0,
-        profile: { ...(stored.userProfile || {}), location: loc }
-      })
-    });
-  } catch { }
+    const controller = new AbortController();
+    const syncTimeout = setTimeout(() => controller.abort(), 15000);
+    try {
+      await fetch(`${BACKEND_URL}/api/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          userId,
+          sessions: stored.sessions || {},
+          totalEarnings: stored.totalEarnings || 0,
+          profile: { ...(stored.userProfile || {}), location: loc }
+        })
+      });
+    } finally {
+      clearTimeout(syncTimeout);
+    }
+  } catch { /* backend optional */ }
 
   try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs[0]) chrome.tabs.remove(tabs[0].id);
-  } catch { window.close(); }
+    await chrome.runtime.sendMessage({ type: "OPEN_USER_DASHBOARD" });
+  } catch {
+    /* ignore */
+  }
+  try {
+    const thisTab = await new Promise((resolve) => {
+      chrome.tabs.getCurrent((t) => resolve(t));
+    });
+    if (thisTab?.id) await chrome.tabs.remove(thisTab.id);
+  } catch {
+    window.close();
+  }
 });
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────

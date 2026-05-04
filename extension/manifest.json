@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Reclaim",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Your data. Your money. Reclaim pays you for the browsing data you've been giving away for free.",
   "permissions": [
     "tabs",
@@ -15,6 +15,12 @@
     "<all_urls>",
     "http://localhost:3000/*"
   ],
+  "externally_connectable": {
+    "matches": [
+      "http://127.0.0.1:5173/*",
+      "http://localhost:5173/*"
+    ]
+  },
   "oauth2": {
     "client_id": "223652421240-37eie1fotpbbbteeev1m4ol6jo419g5d.apps.googleusercontent.com",
     "scopes": ["openid", "email", "profile"]
@@ -23,6 +29,14 @@
     "service_worker": "background.js"
   },
   "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1:5173/*",
+        "http://localhost:5173/*"
+      ],
+      "js": ["dashboard-bridge.js"],
+      "run_at": "document_start"
+    },
     {
       "matches": ["<all_urls>"],
       "js": ["content.js"],

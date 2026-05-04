@@ -1,6 +1,201 @@
 import { useEffect, useState } from "react";
 import { BACKEND, CATEGORY_COLORS, formatTime, getTodayKey, navIcons, styles } from "../ui/constants.js";
 
+function isLocalDashboardHost() {
+  if (typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return h === "127.0.0.1" || h === "localhost";
+}
+
+function readReclaimExtensionIdFromMeta() {
+  if (typeof document === "undefined") return null;
+  return document.querySelector('meta[name="reclaim-extension-id"]')?.getAttribute("content") || null;
+}
+
+/** `?ext=` from popup, or meta from `dashboard-bridge.js` (32-char Chrome extension id). */
+function readReclaimExtensionId() {
+  if (typeof window === "undefined") return null;
+  try {
+    const q = new URLSearchParams(window.location.search).get("ext");
+    if (q && /^[a-z]{32}$/i.test(q.trim())) return q.trim().toLowerCase();
+  } catch {
+    /* ignore */
+  }
+  return readReclaimExtensionIdFromMeta();
+}
+
+/** MV3: long-lived port is more reliable than sendMessage to a waking service worker. */
+function requestExtensionStateViaConnect(extId) {
+  return new Promise((resolve) => {
+    if (!extId) {
+      resolve({ ok: false, payload: null });
+      return;
+    }
+    const rt = globalThis.chrome?.runtime;
+    if (!rt?.connect) {
+      resolve({ ok: false, payload: null });
+      return;
+    }
+    let port;
+    try {
+      port = rt.connect(extId, { name: "reclaim-dashboard" });
+    } catch {
+      resolve({ ok: false, payload: null });
+      return;
+    }
+    let settled = false;
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(tid);
+      try {
+        port.disconnect();
+      } catch {
+        /* ignore */
+      }
+      if (payload && typeof payload === "object") {
+        resolve({ ok: true, payload });
+      } else {
+        resolve({ ok: false, payload: null });
+      }
+    };
+    const tid = setTimeout(() => finish(null), 5000);
+    port.onMessage.addListener((msg) => {
+      if (msg?.type === "RECLAIM_STORAGE" && msg.payload && typeof msg.payload === "object") {
+        finish(msg.payload);
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      if (!settled) finish(null);
+    });
+    try {
+      port.postMessage({ type: "RECLAIM_GET_STORAGE" });
+    } catch {
+      finish(null);
+    }
+  });
+}
+
+/** Fallback: manifest `externally_connectable` + `onMessageExternal`. */
+function requestExtensionStateViaSendMessage(extId) {
+  return new Promise((resolve) => {
+    const rt = globalThis.chrome?.runtime;
+    if (!extId || !rt?.sendMessage) {
+      resolve({ ok: false, payload: null });
+      return;
+    }
+    try {
+      const maybe = rt.sendMessage(extId, { type: "RECLAIM_GET_STORAGE" });
+      if (maybe && typeof maybe.then === "function") {
+        maybe
+          .then((response) => {
+            resolve({ ok: true, payload: response && typeof response === "object" ? response : {} });
+          })
+          .catch(() => resolve({ ok: false, payload: null }));
+        return;
+      }
+    } catch {
+      resolve({ ok: false, payload: null });
+      return;
+    }
+    try {
+      rt.sendMessage(extId, { type: "RECLAIM_GET_STORAGE" }, (response) => {
+        const le = globalThis.chrome?.runtime?.lastError;
+        if (le) {
+          resolve({ ok: false, payload: null });
+          return;
+        }
+        resolve({ ok: true, payload: response && typeof response === "object" ? response : {} });
+      });
+    } catch {
+      resolve({ ok: false, payload: null });
+    }
+  });
+}
+
+/** Waits for `?ext=` or meta, then connect → sendMessage. Uses wall-clock polling (not rAF) so background tabs still resolve before the deadline. */
+function requestExtensionStateViaExternal(maxWaitMs = 6000) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + maxWaitMs;
+    let intervalId = null;
+    let settled = false;
+    let inFlight = false;
+
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (intervalId != null) clearInterval(intervalId);
+      resolve(value);
+    };
+
+    const tick = async () => {
+      if (settled || inFlight) return;
+      inFlight = true;
+      try {
+        const extId = readReclaimExtensionId();
+        const rt = globalThis.chrome?.runtime;
+        if (extId && (rt?.connect || rt?.sendMessage)) {
+          const viaPort = await requestExtensionStateViaConnect(extId);
+          if (settled) return;
+          if (viaPort.ok) {
+            finish(viaPort);
+            return;
+          }
+          const viaMsg = await requestExtensionStateViaSendMessage(extId);
+          if (settled) return;
+          finish(viaMsg);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          finish({ ok: false, payload: null });
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    intervalId = setInterval(() => {
+      void tick();
+    }, 50);
+    void tick();
+  });
+}
+
+/** Page context cannot use chrome.storage; extension content script `dashboard-bridge.js` answers this. */
+function requestExtensionStateViaBridge() {
+  return new Promise((resolve) => {
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    const timeoutMs = 4000;
+    let settled = false;
+
+    function done(value) {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("message", onMessage);
+      clearTimeout(tid);
+      resolve(value);
+    }
+
+    function onMessage(e) {
+      // Do not require e.source === window: replies from the extension content script are same-origin
+      // but may not share the same Window reference as the page bundle.
+      if (e.origin !== window.location.origin) return;
+      const d = e.data;
+      if (!d || d.source !== "reclaim-extension" || d.type !== "EXTENSION_STATE") return;
+      if (d.requestId !== requestId) return;
+      if (!d.ok) {
+        done({ ok: false, payload: null });
+        return;
+      }
+      done({ ok: true, payload: d.payload || {} });
+    }
+
+    const tid = setTimeout(() => done({ ok: false, payload: null }), timeoutMs);
+    window.addEventListener("message", onMessage);
+    window.postMessage({ source: "reclaim-dashboard", type: "GET_EXTENSION_STATE", requestId }, "*");
+  });
+}
+
 export default function UserDashboard() {
   const [totalEarnings, setTotalEarnings] = useState(0);
   const [todayEarnings, setTodayEarnings] = useState(0);
@@ -16,29 +211,69 @@ export default function UserDashboard() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   useEffect(() => {
-    // This page is intended to be opened in Chrome with the extension installed.
-    // When chrome.storage is unavailable (or user is signed out), do NOT show demo data.
-    const canUseChromeStorage = typeof chrome !== "undefined" && !!chrome?.storage?.local;
-    setHasChromeStorage(canUseChromeStorage);
+    let cancelled = false;
 
-    if (!canUseChromeStorage) {
-      setAuthChecked(true);
-      setIsLoggedIn(false);
-      return;
-    }
-
-    chrome.storage.local.get(["isLoggedIn", "sessions", "totalEarnings"], (result) => {
-      const authed = !!result.isLoggedIn;
+    function applyStorageResult(result) {
+      if (cancelled) return;
+      const authed = !!(result?.isLoggedIn || result?.userId);
+      setHasChromeStorage(true);
       setIsLoggedIn(authed);
       setAuthChecked(true);
-
       if (!authed) {
         processData({}, 0);
         return;
       }
-
       processData(result.sessions || {}, result.totalEarnings || 0);
-    });
+    }
+
+    // Local Vite: never use page `chrome.storage` (fake / unusable). Prefer runtime.sendMessage
+    // (externally_connectable), then postMessage bridge.
+    if (isLocalDashboardHost()) {
+      (async () => {
+        const viaExt = await requestExtensionStateViaExternal();
+        if (cancelled) return;
+        if (viaExt.ok) {
+          applyStorageResult(viaExt.payload);
+          return;
+        }
+        const res = await requestExtensionStateViaBridge();
+        if (cancelled) return;
+        if (res.ok) applyStorageResult(res.payload);
+        else {
+          setHasChromeStorage(false);
+          setIsLoggedIn(false);
+          setAuthChecked(true);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const direct = globalThis.chrome?.storage?.local;
+    if (direct) {
+      direct.get(["isLoggedIn", "sessions", "totalEarnings", "userId"], (result) => {
+        if (cancelled) return;
+        if (globalThis.chrome?.runtime?.lastError) {
+          setHasChromeStorage(false);
+          setIsLoggedIn(false);
+          setAuthChecked(true);
+          return;
+        }
+        applyStorageResult(result || {});
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setHasChromeStorage(false);
+    setIsLoggedIn(false);
+    setAuthChecked(true);
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -128,8 +363,7 @@ export default function UserDashboard() {
             Open the Reclaim extension and sign in first.
           </div>
           <div style={{ marginTop: 14, color: "#888", fontFamily: "DM Mono, monospace", fontSize: 12, lineHeight: 1.8 }}>
-            This dashboard reads your data from the Chrome extension’s local storage. If you’re signed out (or the extension isn’t available in this tab),
-            you’ll be redirected here instead of seeing demo data.
+            Use <strong>Chrome</strong> with the <strong>Reclaim</strong> extension enabled. Open this page via the extension’s <strong>Dashboard</strong> button (recommended), or hard‑refresh after a second so the extension can inject its id. Embedded preview browsers won’t work. If you’re signed out in the extension, sign in there first.
           </div>
           <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
             <a href="/" style={styles.ctaSecondary}>Back to landing</a>

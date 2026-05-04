@@ -20,6 +20,104 @@ const PREMIUM_BRANDS = [
   "tata", "mahindra", "titan", "tanishq"
 ];
 
+const DASHBOARD_STORAGE_KEYS = [
+  "isLoggedIn",
+  "sessions",
+  "totalEarnings",
+  "userId",
+  "userName",
+  "userEmail",
+  "userPicture",
+];
+
+// Chrome's `externally_connectable` in manifest.json already enforces which origins
+// can send external messages, so a secondary URL check here is redundant.
+// Worse, in MV3 service worker wakeup scenarios sender.url can be unpopulated,
+// causing the old check to silently reject valid messages from signed-in users.
+
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== "RECLAIM_GET_STORAGE") return false;
+  chrome.storage.local
+    .get(DASHBOARD_STORAGE_KEYS)
+    .then((result) => sendResponse(result || {}))
+    .catch(() => sendResponse({}));
+  return true;
+});
+
+chrome.runtime.onConnectExternal.addListener((port) => {
+  if (port.name !== "reclaim-dashboard") {
+    port.disconnect();
+    return;
+  }
+  port.onMessage.addListener((msg) => {
+    if (!msg || msg.type !== "RECLAIM_GET_STORAGE") return;
+    chrome.storage.local.get(DASHBOARD_STORAGE_KEYS).then((result) => {
+      try {
+        port.postMessage({ type: "RECLAIM_STORAGE", payload: result || {} });
+      } catch {
+        /* port may be gone */
+      }
+    });
+  });
+});
+
+/** Popup / onboarding open the Vite user dashboard here (popup only sends OPEN_USER_DASHBOARD). */
+const DEFAULT_USER_DASHBOARD_URL = "http://localhost:5173/user";
+
+async function resolveUserDashboardHref() {
+  const { reclaimDashboardUserUrl } = await chrome.storage.local.get(["reclaimDashboardUserUrl"]);
+  if (typeof reclaimDashboardUserUrl === "string" && reclaimDashboardUserUrl.trim()) {
+    try {
+      return new URL(reclaimDashboardUserUrl.trim()).href;
+    } catch {
+      /* fall through */
+    }
+  }
+  try {
+    const tabs = await chrome.tabs.query({
+      url: ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+    });
+    for (const t of tabs) {
+      const u = new URL(t.url || "");
+      if (u.port === "5173" && (u.hostname === "localhost" || u.hostname === "127.0.0.1")) {
+        return `${u.origin}/user`;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_USER_DASHBOARD_URL;
+}
+
+async function openUserDashboardInBrowser() {
+  const href = await resolveUserDashboardHref();
+  const tabs = await chrome.tabs.query({});
+  const match = tabs.find((t) => {
+    try {
+      const u = new URL(t.url || "");
+      return (
+        (u.hostname === "localhost" || u.hostname === "127.0.0.1") &&
+        u.port === "5173" &&
+        u.pathname === "/user"
+      );
+    } catch {
+      return false;
+    }
+  });
+  if (match?.id != null) {
+    await chrome.tabs.update(match.id, { active: true, url: href });
+    if (match.windowId != null) {
+      try {
+        await chrome.windows.update(match.windowId, { focused: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    return;
+  }
+  await chrome.tabs.create({ url: href, active: true });
+}
+
 // ─── ONBOARDING ───────────────────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -362,6 +460,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "GET_AUTH_STATE") {
     chrome.storage.local.get(["isLoggedIn", "userId", "userName", "userEmail", "userPicture"])
       .then(result => sendResponse(result)).catch(() => sendResponse({}));
+    return true;
+  }
+  if (message.type === "OPEN_USER_DASHBOARD") {
+    openUserDashboardInBrowser()
+      .then(() => sendResponse({ success: true }))
+      .catch((err) => sendResponse({ success: false, error: err?.message || String(err) }));
     return true;
   }
   if (message.type !== "CONTENT_DATA") return;
