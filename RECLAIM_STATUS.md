@@ -1,6 +1,6 @@
 # Reclaim — Project Status Document
-> Last updated: 2026-05-05
-> Version: 0.9.0
+> Last updated: 2026-05-06
+> Version: 0.10.0
 > Repo: https://github.com/khatriadbhut/reclaim
 
 ---
@@ -26,7 +26,7 @@ End users get transparency, category insights, and modeled earnings in the exten
 | Dashboard Frontend | React + Vite (localhost:5173) |
 | Backend | Node.js + Express 5 (localhost:3000) |
 | AI | Google Gemini API (gemini-2.5-flash) |
-| Database | PostgreSQL (planned — backend currently in-memory for dev/demo) |
+| Database | PostgreSQL (**next milestone** — backend still in-memory for dev/demo) |
 | Blockchain | Ethereum/Solana + MetaMask (planned — Sepolia testnet for demo) |
 | Hosting | AWS / Google Cloud (planned) |
 
@@ -257,7 +257,9 @@ A production-grade content script injected into every page via Manifest v3 `cont
 | POST | `/api/purchase` | Purchase flow (see implementation) |
 | GET | `/api/company/packages` | Authenticated package list for company UI |
 | GET | `/api/company/purchases` | Company purchase history |
-| POST | `/api/company/purchase` | Company purchase |
+| POST | `/api/company/purchase` | Company purchase (curated package) |
+| POST | `/api/company/purchase/custom` | Custom module purchase (server-computed price) |
+| GET | `/api/company/custom-pricing` | Base + per-module USD + export column names |
 | GET | `/api/company/download/:purchaseId` | Download export |
 | POST | `/api/insight` | Short Gemini insight from summary |
 | GET | `/api/health` | Health / counts |
@@ -276,15 +278,22 @@ A production-grade content script injected into every page via Manifest v3 `cont
 ### 9. Dashboard (React + Vite) ✅
 - **`Landing.jsx`** — marketing landing at `/` (consumer + **Reclaim Business** paths; positioning line: consent-aware / anonymized packages / businesses)
 - **`UserDashboard.jsx`** at `/user` — **Not** raw `chrome.storage` in the page on localhost (DevTools “fake” storage). On **`127.0.0.1` / `localhost`**: (1) wait for extension id (`?ext=` if valid 32-char id, else meta from bridge), (2) **`chrome.runtime.connect` / `sendMessage`** to read storage via **`externally_connectable`**, (3) **`postMessage`** bridge to `dashboard-bridge.js` as fallback; wall-clock polling (not `requestAnimationFrame`-only) so background tabs still authenticate before timeout. Elsewhere / future hosted origin: direct `chrome.storage.local` when the API exists. **AI insight** calls `BACKEND + /api/insight` when categories exist. Sign-in gate when no extension session is readable.
-- **`CompanyDashboard.jsx`** at `/company` — Google OAuth redirect flow, cookie auth, packages, purchases, CSV download — all against `BACKEND` (CORS + credentials for company routes)
+- **`CompanyDashboard.jsx`** at `/company` — Google OAuth (web), cookie session, **curated packages** (columns, good-for, signals from API) vs **custom export** (per-module builder with export-column chips, order summary, server-priced totals). Purchase history table with download links. **Pricing:** server is source of truth for custom (`CUSTOM_PACKAGE_BASE_USD`, per-module map); client displays USD consistently. Exports are pseudonymous (**no legal names** in audience files by design).
 - Shared styling via `ui/constants.js` (`BACKEND`, `#0d0d0d`, `#00e5a0`, Syne + DM Mono, category colors, etc.)
+
+### 10. Company / B2B backend flows ✅ (still in-memory storage)
+- **`POST /api/company/purchase/custom`** — validates category ids, **computes price server-side**, builds rows via `buildCustomPackageRows`.
+- **`GET /api/company/custom-pricing`** — base USD + per-category prices + export column names (for API consumers).
+- **`/api/sync`** can persist **`visitLog`** segments → **`visit_segments_30d`** on company exports when the extension sends them.
+- Shared **`buildPackageRows`** / **`buildCustomPackageRows`** for CSV/JSON downloads with pseudonymous `user_id` scoping per company.
 
 ---
 
 ## What Has To Be Done (Priority Order)
 
-### Priority 1 — Production readiness
-- **PostgreSQL** (or other durable store) — replace in-memory `users` / `userSessions` / company data
+### Priority 1 — Ship-ready infra (in progress / next)
+- **PostgreSQL** — replace in-memory `users` / `userSessions` / `userVisitLogs` / companies / purchases; migrations; seed data for demos.
+- **Chrome Web Store** — packaged MV3 extension, listing copy, privacy policy, permissions justification; move teams off “Load unpacked” for judges/users.
 - **Rate limiting** — protect Gemini and auth endpoints
 - **Deploy** — align `BACKEND_URL` / `BACKEND` / `manifest.json` host permissions / `COMPANY_OAUTH_REDIRECT_URL` / `COMPANY_DASHBOARD_ORIGIN` with real hosts (see root `README.md`)
 
@@ -401,22 +410,21 @@ npm run dev
 
 ---
 
-## Notes for AI Agents
+## Notes for maintainers
 
-- Read this document before large changes
-- Update the relevant section after completing a task
-- Manifest v3 — service worker only for background
-- Dashboard styling: inline / `constants.js` objects — keep visual consistency
-- Extension accent: `#00e5a0`, background: `#0d0d0d`, fonts: Syne + DM Mono
-- Gemini model in code: **`gemini-2.5-flash`** — handle 429/503 gracefully in all call sites
-- Backend: port **3000** | Dashboard dev: **5173**
-- Avoid new npm dependencies unless necessary
-- `KNOWN_DOMAINS` in `server.js` reduces Gemini calls — update with care
-- PostgreSQL deferred until explicitly requested
-- In-memory server storage is intentional for the current phase
-- User IDs: `usr_` prefix + random string
-- `content.js` must stay lightweight (`document_idle`, all URLs)
-- Extract cache persists in `chrome.storage.local`
-- `pendingContentData` in background is in-memory only (clears on worker restart)
-- **Popup / onboarding** must not duplicate tab-open logic: use **`OPEN_USER_DASHBOARD`** in `background.js` so `reclaimDashboardUserUrl` and focus/reuse behavior stay consistent
-- **`dashboard-bridge.js`** + **`externally_connectable`** are both required for reliable `/user` auth on the Vite dev server; changing one without the other often breaks the gate
+- Read this document before large refactors; update the relevant section when behavior changes.
+- Manifest v3 — service worker only for background.
+- Dashboard styling: inline / `constants.js` objects — keep visual consistency.
+- Extension accent: `#00e5a0`, background: `#0d0d0d`, fonts: Syne + DM Mono.
+- Gemini model in code: **`gemini-2.5-flash`** — handle 429/503 gracefully in all call sites.
+- Backend: port **3000** | Dashboard dev: **5173**.
+- Avoid new npm dependencies unless necessary.
+- `KNOWN_DOMAINS` in `server.js` reduces Gemini calls — update with care.
+- **PostgreSQL + Web Store** are the next major milestones; in-memory storage remains until then.
+- User IDs: `usr_` prefix + random string; company exports use scoped pseudonymous ids.
+- `content.js` must stay lightweight (`document_idle`, all URLs).
+- Extract cache persists in `chrome.storage.local`.
+- `pendingContentData` in background is in-memory only (clears on worker restart).
+- **Popup / onboarding** must not duplicate tab-open logic: use **`OPEN_USER_DASHBOARD`** in `background.js` so `reclaimDashboardUserUrl` and focus/reuse behavior stay consistent.
+- **`dashboard-bridge.js`** + **`externally_connectable`** are both required for reliable `/user` auth on the Vite dev server; changing one without the other often breaks the gate.
+- **Company pricing:** keep `CUSTOM_CATEGORY_PRICE_USD` / `CUSTOM_PACKAGE_BASE_USD` in `server.js` aligned with `DATA_CATEGORIES` prices in `dashboard/src/pages/CompanyDashboard.jsx`.

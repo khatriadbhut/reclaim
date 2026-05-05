@@ -119,4 +119,6 @@ For anything other than localhost, update:
 
 ## Status
 
-Active development — extension, API, landing, user dashboard, and company marketplace flow are usable locally with the steps above.
+Active development: extension, API, landing, user dashboard, and **company marketplace** (curated + custom exports, server-side pricing) run locally — see **[RECLAIM_STATUS.md](./RECLAIM_STATUS.md)** for detail.
+
+**Next milestones:** PostgreSQL for durable data, Chrome Web Store listing (installable extension + privacy copy), then production deploy.
