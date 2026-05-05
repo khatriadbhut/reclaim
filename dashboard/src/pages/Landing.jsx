@@ -339,6 +339,17 @@ const CSS = `
     line-height: 1.75; margin-bottom: 20px;
   }
 
+  .rclCardBodyBlock {
+    flex-shrink: 0;
+  }
+
+  /* Fills space between chips and CTA so buttons align; never lets chips touch the button */
+  .rclCardGrow {
+    flex: 1 1 auto;
+    min-height: 24px;
+    width: 100%;
+  }
+
   .rclChips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 0; }
   .rclChip {
     font-family: 'Space Mono', monospace;
@@ -353,7 +364,8 @@ const CSS = `
     align-items: center;
     justify-content: center;
     text-align: center;
-    margin-top: auto;
+    flex-shrink: 0;
+    align-self: stretch;
     padding: 12px 16px;
     min-height: 44px;
     box-sizing: border-box;
@@ -365,8 +377,8 @@ const CSS = `
   }
   .rclCta--u { background: var(--g); color: var(--bg); }
   .rclCta--u:hover { background: var(--g3); }
-  .rclCta--b { background: transparent; color: var(--bl); border-color: rgba(77,159,255,0.4); }
-  .rclCta--b:hover { background: rgba(77,159,255,0.1); }
+  .rclCta--b { background: var(--bl); color: #0a0a0a; }
+  .rclCta--b:hover { filter: brightness(1.12); }
 
   /* ── HOW IT WORKS ── */
   .rclHow {
@@ -609,22 +621,26 @@ export default function Landing() {
                 )}
               </svg>
 
-              <span className={`rclCardTag rclCardTag--${isU ? "u" : "b"}`}>{p.tag}</span>
+              <div className="rclCardBodyBlock">
+                <span className={`rclCardTag rclCardTag--${isU ? "u" : "b"}`}>{p.tag}</span>
 
-              <div className={`rclCardIcon rclCardIcon--${isU ? "u" : "b"}`} aria-hidden="true">
-                {isU ? "◈" : "◇"}
+                <div className={`rclCardIcon rclCardIcon--${isU ? "u" : "b"}`} aria-hidden="true">
+                  {isU ? "◈" : "◇"}
+                </div>
+
+                <div className="rclCardTitle">{p.title}</div>
+                <div className="rclCardBody">{p.body}</div>
+
+                <div className="rclChips">
+                  {p.bullets.map((b) => (
+                    <span key={b} className={`rclChip rclChip--${isU ? "u" : "b"}`}>
+                      {b}
+                    </span>
+                  ))}
+                </div>
               </div>
 
-              <div className="rclCardTitle">{p.title}</div>
-              <div className="rclCardBody">{p.body}</div>
-
-              <div className="rclChips">
-                {p.bullets.map((b) => (
-                  <span key={b} className={`rclChip rclChip--${isU ? "u" : "b"}`}>
-                    {b}
-                  </span>
-                ))}
-              </div>
+              <div className="rclCardGrow" aria-hidden="true" />
 
               <a
                 href={p.href}
