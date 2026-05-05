@@ -2,7 +2,7 @@
 
 > Your data. Your money.
 
-Reclaim is a Chrome extension (Manifest V3) plus a small API server. Users opt in, browsing signals sync to the backend, and earnings plus AI insights show up in a web dashboard. A separate **Reclaim Business** area on the same site lets companies sign in with Google (web OAuth), buy data packages, and download CSV/JSON.
+Reclaim is a Chrome extension (Manifest V3) plus a small API server. Users opt in, browsing signals sync to the backend, and earnings plus AI insights show up in a web dashboard. A separate **Reclaim Business** area on the same site lets companies sign in with Google (web OAuth), buy **curated or custom** data packages (**pricing set on the server**), and download CSV/JSON.
 
 ## Repository layout
 
