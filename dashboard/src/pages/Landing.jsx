@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 /* ─────────────────────────────────────────
    ROTATING HERO WORDS
 ───────────────────────────────────────── */
-const ROTATING_ENDINGS = ["payouts.", "privacy.", "control.", "safety.", "fairness."];
+const ROTATING_ENDINGS = ["value.", "privacy.", "control.", "safety.", "fairness."];
 
 /* ─────────────────────────────────────────
    TRUST ITEMS
@@ -11,7 +11,7 @@ const ROTATING_ENDINGS = ["payouts.", "privacy.", "control.", "safety.", "fairne
 const TRUST = [
   { k: "Opt‑in",       v: "You choose what's shared" },
   { k: "Anonymous",    v: "No names sold" },
-  { k: "Transparent",  v: "See every dollar" },
+  { k: "Transparent",  v: "See modeled breakdown" },
   { k: "Safe",         v: "Privacy-first design" },
 ];
 
@@ -23,19 +23,19 @@ const PRODUCT_CARDS = [
     id: "users",
     tag: "// reclaim consumer",
     tone: "user",
-    title: "Get paid.\nStay anonymous.",
-    body: "Opt in. Share browsing signals. Watch earnings accumulate — no names, no tracking, no catch.",
-    bullets: ["opt-in only", "anonymous", "visible earnings", "full control"],
+    title: "Track value.\nStay anonymous.",
+    body: "Opt in to share browsing signals on your terms. See modeled earnings in your dashboard — pseudonymous IDs, no names sold.",
+    bullets: ["opt-in only", "pseudonymous", "modeled earnings", "full control"],
     href: "/user",
-    cta: "Start earning →",
+    cta: "Open dashboard →",
   },
   {
     id: "business",
     tag: "// reclaim business",
     tone: "biz",
     title: "Buy intent.\nNot identities.",
-    body: "Access privacy-safe, opt-in browsing signals — aggregated by category, zero identity tracking.",
-    bullets: ["intent segments", "anonymized", "no PII"],
+    body: "Access privacy-safe, opt-in browsing signals — structured by category; exports use pseudonymous user ids, not legal names.",
+    bullets: ["intent segments", "curated + custom", "anonymized", "no PII"],
     href: "/company",
     cta: "Explore packages →",
   },
@@ -47,7 +47,7 @@ const PRODUCT_CARDS = [
 const STEPS = [
   { n: "01", icon: "⬡", t: "Opt in",    d: "Choose exactly what you share. Nothing runs without your say." },
   { n: "02", icon: "◎", t: "Anonymize", d: "Signals are stripped + aggregated. No identities ever sold." },
-  { n: "03", icon: "⬖", t: "Exchange",  d: "Users earn. Businesses buy privacy-safe packages." },
+  { n: "03", icon: "⬖", t: "Exchange",  d: "Users track modeled value; businesses buy privacy-safe packages. Cash payouts — roadmap." },
 ];
 
 /* ─────────────────────────────────────────
@@ -272,6 +272,7 @@ const CSS = `
   .rclCards {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    align-items: stretch;
     gap: 16px;
     position: relative; z-index: 5;
     padding: 0 24px 52px;
@@ -287,6 +288,10 @@ const CSS = `
     position: relative; overflow: hidden;
     transition: transform 0.3s ease, box-shadow 0.3s ease;
     animation: rclFadeUp 0.8s ease both;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    box-sizing: border-box;
   }
   .rclCard:hover { transform: translateY(-6px); }
   .rclCard--u { border: 1px solid var(--border-g); animation-delay: 0.28s; }
@@ -334,7 +339,7 @@ const CSS = `
     line-height: 1.75; margin-bottom: 20px;
   }
 
-  .rclChips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 24px; }
+  .rclChips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 0; }
   .rclChip {
     font-family: 'Space Mono', monospace;
     font-size: 10px; padding: 4px 10px;
@@ -344,15 +349,23 @@ const CSS = `
   .rclChip--b { background: rgba(77,159,255,0.08); border: 1px solid rgba(77,159,255,0.22); color: var(--bl); }
 
   .rclCta {
-    display: block; text-align: center;
-    padding: 12px 0; border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    margin-top: auto;
+    padding: 12px 16px;
+    min-height: 44px;
+    box-sizing: border-box;
+    border-radius: 10px;
     font-weight: 700; font-size: 14px;
     letter-spacing: 0.3px; text-decoration: none;
     transition: all 0.2s; cursor: pointer;
+    border: 1px solid transparent;
   }
   .rclCta--u { background: var(--g); color: var(--bg); }
   .rclCta--u:hover { background: var(--g3); }
-  .rclCta--b { background: transparent; color: var(--bl); border: 1px solid rgba(77,159,255,0.4); }
+  .rclCta--b { background: transparent; color: var(--bl); border-color: rgba(77,159,255,0.4); }
   .rclCta--b:hover { background: rgba(77,159,255,0.1); }
 
   /* ── HOW IT WORKS ── */
@@ -654,7 +667,7 @@ export default function Landing() {
       {/* ── FOOTER ── */}
       <footer className="rclFooter">
         <div className="rclFooterNote">
-          consent-aware · privacy-safe · payouts to signal owners · businesses buy anonymized only
+          consent-aware · privacy-safe · economics aligned with signal owners · businesses buy anonymized exports only
         </div>
       </footer>
     </div>
