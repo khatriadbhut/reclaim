@@ -4,6 +4,8 @@
 
 Reclaim is a Chrome extension (Manifest V3) plus a small API server. Users opt in, browsing signals sync to the backend, and earnings plus AI insights show up in a web dashboard. A separate **Reclaim Business** area on the same site lets companies sign in with Google (web OAuth), buy **curated or custom** data packages (**pricing set on the server**), and download CSV/JSON.
 
+**Compared with traditional data brokers:** many incumbents monetize aggregated or opaque audience graphs with limited visibility for end users. Reclaim starts from **explicit opt-in** and builds **structured, session-level signals** (categories, time-on-site, extraction-backed fields) that buyers can often reason about more clearly—especially where **provenance, explainability, and compliance posture** matter. Scale still depends on growing opt-in users in the segments buyers need; see **[RECLAIM_STATUS.md](./RECLAIM_STATUS.md)** for the fuller positioning.
+
 ## Repository layout
 
 ```

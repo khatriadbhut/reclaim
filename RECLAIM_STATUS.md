@@ -15,6 +15,15 @@ End users get transparency, category insights, and modeled earnings in the exten
 
 **Competitors / analogs:** Caden, Datacy, panel apps, bandwidth-sharing apps. Differentiation in-repo today: **extension depth** (extraction + content signals + session economics) plus a **live company purchase path** on the dashboard.
 
+### Vs. traditional data brokers
+
+Large brokers often combine many feeds (panels, partnerships, resale markets). Strengths are frequently **historical scale** and **existing buyer relationships**. Reclaim is not claiming better-on-every-axis; the wedge is different:
+
+- **Provenance:** Data flows from users who **opt in** to structured collection via the extension—easier to explain internally (legal, procurement, brand safety) than opaque resale graphs.
+- **Signal shape:** When liquidity exists, exports can include **interpretable behavioral features** (domains, dwell time, categories, extraction-backed fields)—not only cohort membership or probabilistic IDs.
+- **Tradeoffs:** Paying users raises **supply-side cost** versus models that monetize data without sharing economics downstream. The upside is **alignment** and **defensibility** of what gets sold.
+- **Win condition:** Strongest where buyers prioritize **consent clarity + explainability + freshness** for specific segments—subject to reaching enough opted-in users in those segments.
+
 ---
 
 ## Tech Stack
