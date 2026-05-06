@@ -187,7 +187,7 @@ async function loadDemographicsFromDB(userId) {
 
   // 1. Try the backend — catches edits made on other devices
   try {
-    const res = await fetch(`${BACKEND_URL}/api/auth/user?userId=${encodeURIComponent(userId)}`);
+    const res = await fetch(`${BACKEND_URL}/api/auth/user/${encodeURIComponent(userId)}`);
     if (res.ok) {
       const data = await res.json();
       // Support both { profile: {...} } and flat { age_range, gender, occupation }

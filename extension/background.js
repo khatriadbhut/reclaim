@@ -165,7 +165,9 @@ async function signInWithGoogle(fromOnboardingPage = false, forceAccountPicker =
           userEmail: user.email,
           userPicture: user.picture,
           accessToken: token,
-          isLoggedIn: true
+          isLoggedIn: true,
+          // Backend already has demographics — don’t block the popup until they re-click “Done” in onboarding.
+          ...(user.hasDemographics ? { onboardingComplete: true } : {})
         });
 
         // Fire-and-forget — do NOT await, so sendResponse fires immediately
@@ -459,10 +461,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === "GET_AUTH_STATE") {
-    chrome.storage.local
-      .get(["isLoggedIn", "userId", "userName", "userEmail", "userPicture", "onboardingComplete"])
-      .then((result) => sendResponse(result))
-      .catch(() => sendResponse({}));
+    (async () => {
+      try {
+        const keys = ["isLoggedIn", "userId", "userName", "userEmail", "userPicture", "onboardingComplete", "userProfile"];
+        const result = await chrome.storage.local.get(keys);
+        if (result.isLoggedIn === true && result.userId && result.onboardingComplete !== true) {
+          try {
+            const { res, json } = await fetchJsonWithTimeout(
+              `${BACKEND_URL}/api/auth/user/${encodeURIComponent(result.userId)}`,
+              {},
+              8000
+            );
+            if (res.ok && json?.profile) {
+              const p = json.profile;
+              if (p.age_range && p.gender && p.occupation) {
+                const prevProfile = result.userProfile || {};
+                await chrome.storage.local.set({
+                  onboardingComplete: true,
+                  userProfile: {
+                    ...prevProfile,
+                    age_range: p.age_range,
+                    gender: p.gender,
+                    occupation: p.occupation,
+                    ...(p.location ? { location: p.location } : {})
+                  }
+                });
+                result.onboardingComplete = true;
+              }
+            }
+          } catch {
+            /* backend unreachable */
+          }
+        }
+        delete result.userProfile;
+        sendResponse(result);
+      } catch {
+        sendResponse({});
+      }
+    })();
     return true;
   }
   if (message.type === "OPEN_USER_DASHBOARD") {
