@@ -544,9 +544,9 @@ export default function CompanyDashboard() {
   }
 
   function startCompanyGoogleOAuth() {
-    // replace: avoids an extra /company history entry so Back from Google
-    // does not land on a stale pre-OAuth dashboard snapshot as often.
-    window.location.replace(`${BACKEND}/api/company/auth/google/start`);
+    // assign (not replace) keeps /company in session history so Back from Google
+    // returns to the login screen. Stale BFCache /company is handled via pageshow.
+    window.location.assign(`${BACKEND}/api/company/auth/google/start`);
   }
 
   async function companyLogout() {
