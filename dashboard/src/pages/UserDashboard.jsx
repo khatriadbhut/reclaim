@@ -204,6 +204,7 @@ export default function UserDashboard() {
   const [insight, setInsight] = useState("");
   const [insightLoading, setInsightLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
+  const [showAllScrolledDomains, setShowAllScrolledDomains] = useState(false);
   const [walletConnected, setWalletConnected] = useState(false);
   const [walletAddress, setWalletAddress] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
@@ -341,6 +342,51 @@ export default function UserDashboard() {
   const todayKey = getTodayKey();
   const todaySessions = sessions[todayKey] || {};
   const topDomains = Object.values(todaySessions).sort((a, b) => b.totalSeconds - a.totalSeconds).slice(0, 8);
+  const SCROLL_DOMAIN_MIN_DEPTH = 30;
+  const scrolledDomainsAll = (() => {
+    const byDomain = new Map();
+    for (const day of Object.values(sessions || {})) {
+      for (const s of Object.values(day || {})) {
+        if (!s || !s.domain) continue;
+        const depth = typeof s.maxScrollDepth === "number" ? s.maxScrollDepth : 0;
+        if (depth < SCROLL_DOMAIN_MIN_DEPTH) continue;
+        const prev = byDomain.get(s.domain) || {
+          domain: s.domain,
+          category: s.category || "other",
+          maxScrollDepth: 0,
+          totalSeconds: 0,
+          visits: 0,
+          earned: 0,
+        };
+        prev.totalSeconds += s.totalSeconds || 0;
+        prev.visits += s.visits || 0;
+        prev.earned += s.earned || 0;
+        if (depth > prev.maxScrollDepth) prev.maxScrollDepth = depth;
+        // Prefer non-other category if we have one
+        const c = s.category || "other";
+        if (prev.category === "other" && c !== "other") prev.category = c;
+        byDomain.set(s.domain, prev);
+      }
+    }
+    return [...byDomain.values()].sort((a, b) => (b.maxScrollDepth - a.maxScrollDepth) || (b.totalSeconds - a.totalSeconds));
+  })();
+  const topSitesExtended = (() => {
+    const todaySet = new Set(topDomains.map((s) => s.domain));
+    const extra = scrolledDomainsAll
+      .filter((s) => !todaySet.has(s.domain))
+      .slice(0, Math.max(0, 200 - topDomains.length))
+      .map((s) => ({ ...s, scope: "scrolled" }));
+    const today = topDomains.map((s) => ({
+      domain: s.domain,
+      category: s.category || "other",
+      totalSeconds: s.totalSeconds || 0,
+      visits: s.visits || 0,
+      earned: s.earned || 0,
+      maxScrollDepth: typeof s.maxScrollDepth === "number" ? s.maxScrollDepth : null,
+      scope: "today",
+    }));
+    return [...today, ...extra];
+  })();
 
   const dollars = Math.floor(totalEarnings);
   const cents = ((totalEarnings - dollars) * 100).toFixed(0).padStart(2, "0");
@@ -522,19 +568,37 @@ export default function UserDashboard() {
         {activeTab === "browsing" && (
           <div style={styles.grid}>
             <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
-              <div style={styles.cardLabel}>Top Sites Today</div>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div style={styles.cardLabel}>Top Sites Today</div>
+                <button
+                  type="button"
+                  style={{ ...styles.refreshBtn, marginTop: 0 }}
+                  onClick={() => setShowAllScrolledDomains((v) => !v)}
+                >
+                  {showAllScrolledDomains ? "Show top only" : "Show all scrolled"}
+                </button>
+              </div>
+              {showAllScrolledDomains && (
+                <div style={{ ...styles.cardSub, marginTop: 6 }}>
+                  Includes all-time scrolled domains (scroll depth ≥ {SCROLL_DOMAIN_MIN_DEPTH}%) — showing up to 200
+                </div>
+              )}
               <table style={styles.table}>
                 <thead>
                   <tr>
-                    {["Domain", "Category", "Time", "Visits", "Modeled $"].map((h) => (
+                    {(
+                      showAllScrolledDomains
+                        ? ["Domain", "Category", "Time", "Visits", "Modeled $", "Max Scroll", "Source"]
+                        : ["Domain", "Category", "Time", "Visits", "Modeled $"]
+                    ).map((h) => (
                       <th key={h} style={styles.th}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {topDomains.map((s) => (
-                    <tr key={s.domain} style={styles.tr}>
-                      <td style={styles.td}>{s.domain}</td>
+                  {(showAllScrolledDomains ? topSitesExtended : topDomains).map((s) => (
+                    <tr key={(showAllScrolledDomains ? `${s.scope}-${s.domain}` : s.domain)} style={styles.tr}>
+                      <td style={{ ...styles.td, opacity: showAllScrolledDomains && s.scope === "scrolled" ? 0.85 : 1 }}>{s.domain}</td>
                       <td style={styles.td}>
                         <span style={{ ...styles.catPill, background: (CATEGORY_COLORS[s.category] || "#666") + "22", color: CATEGORY_COLORS[s.category] || "#fff" }}>
                           {s.category}
@@ -542,11 +606,17 @@ export default function UserDashboard() {
                       </td>
                       <td style={styles.td}>{formatTime(s.totalSeconds)}</td>
                       <td style={styles.td}>{s.visits}</td>
-                      <td style={{ ...styles.td, color: "#00e5a0" }}>${s.earned.toFixed(5)}</td>
+                      <td style={{ ...styles.td, color: "#00e5a0" }}>${(s.earned || 0).toFixed(5)}</td>
+                      {showAllScrolledDomains && (
+                        <>
+                          <td style={styles.td}>{s.maxScrollDepth == null ? "—" : `${Math.round(s.maxScrollDepth)}%`}</td>
+                          <td style={styles.td}>{s.scope}</td>
+                        </>
+                      )}
                     </tr>
                   ))}
-                  {topDomains.length === 0 && (
-                    <tr><td colSpan={5} style={{ ...styles.td, color: "#666", textAlign: "center", padding: 32 }}>no browsing data yet</td></tr>
+                  {(showAllScrolledDomains ? topSitesExtended : topDomains).length === 0 && (
+                    <tr><td colSpan={showAllScrolledDomains ? 7 : 5} style={{ ...styles.td, color: "#666", textAlign: "center", padding: 32 }}>no browsing data yet</td></tr>
                   )}
                 </tbody>
               </table>
