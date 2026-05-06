@@ -211,6 +211,10 @@ export default function UserDashboard() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   useEffect(() => {
+    if (activeTab === "insights") setActiveTab("overview");
+  }, [activeTab]);
+
+  useEffect(() => {
     let cancelled = false;
 
     function applyStorageResult(result) {
@@ -392,7 +396,7 @@ export default function UserDashboard() {
       <aside style={styles.sidebar}>
         <div style={styles.logo}>re<span style={{ color: "#f0f0f0" }}>claim</span></div>
         <nav style={styles.nav}>
-          {["overview", "browsing", "insights", "wallet"].map((tab) => (
+          {["overview", "browsing", "wallet"].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -421,9 +425,7 @@ export default function UserDashboard() {
                 <span style={styles.walletDot} />
                 {walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
               </div>
-            ) : (
-              <button type="button" style={styles.connectBtn} onClick={connectWallet}>Connect Wallet</button>
-            )
+            ) : null
           ) : (
             <button
               type="button"
@@ -476,7 +478,17 @@ export default function UserDashboard() {
             </div>
 
             <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
-              <div style={styles.cardLabel}>AI Insight</div>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 4 }}>
+                <div style={{ ...styles.cardLabel, marginBottom: 0 }}>AI Insight</div>
+                <button
+                  type="button"
+                  style={{ ...styles.refreshBtn, marginTop: 0 }}
+                  disabled={insightLoading || sortedCats.length === 0}
+                  onClick={() => fetchInsight(categories)}
+                >
+                  Refresh insight
+                </button>
+              </div>
               {insightLoading ? (
                 <div style={styles.insightLoading}>analysing your browsing patterns...</div>
               ) : (
@@ -542,48 +554,9 @@ export default function UserDashboard() {
           </div>
         )}
 
-        {activeTab === "insights" && (
-          <div style={styles.grid}>
-            <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
-              <div style={styles.cardLabel}>AI Insight</div>
-              {insightLoading ? (
-                <div style={styles.insightLoading}>analysing your browsing patterns...</div>
-              ) : (
-                <div style={styles.insightText}>{insight || "browse a few sites to generate your insight."}</div>
-              )}
-              <button style={styles.refreshBtn} onClick={() => fetchInsight(categories)}>
-                Refresh Insight
-              </button>
-            </div>
-            <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
-              <div style={styles.cardLabel}>Today’s modeled value by category</div>
-              <div style={styles.catList}>
-                {sortedCats.map(([cat, data]) => (
-                  <div key={cat} style={styles.catRow}>
-                    <div style={styles.catName}>{cat}</div>
-                    <div style={styles.barTrack}>
-                      <div style={{
-                        ...styles.barFill,
-                        width: `${(data.earned / (todayEarnings || 1)) * 100}%`,
-                        background: CATEGORY_COLORS[cat] || "#666",
-                      }} />
-                    </div>
-                    <div style={styles.catEarned}>${data.earned.toFixed(4)}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
         {activeTab === "wallet" && (
           <div style={styles.grid}>
-            <div style={{ ...styles.card, ...styles.cardAccent }}>
-              <div style={styles.cardLabel}>Modeled balance</div>
-              <div style={styles.bigNumber}>${dollars}<span style={styles.bigNumberCents}>.{cents}</span></div>
-              <div style={styles.cardSub}>same estimate as overview · payouts not live yet</div>
-            </div>
-            <div style={styles.card}>
+            <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
               <div style={styles.cardLabel}>Wallet Status</div>
               {walletConnected ? (
                 <>
@@ -595,7 +568,10 @@ export default function UserDashboard() {
               ) : (
                 <>
                   <div style={{ color: "#666", fontSize: 13, fontFamily: "DM Mono, monospace", marginTop: 8 }}>Not connected</div>
-                  <button style={{ ...styles.connectBtn, marginTop: 12 }} onClick={connectWallet}>Connect MetaMask</button>
+                  <div style={{ color: "#555", fontSize: 11, fontFamily: "DM Mono, monospace", marginTop: 10, lineHeight: 1.55 }}>
+                    Your modeled balance stays on <strong style={{ color: "#777" }}>Overview</strong> until on-chain payouts exist.
+                  </div>
+                  <button type="button" style={{ ...styles.connectBtn, marginTop: 14 }} onClick={connectWallet}>Connect MetaMask</button>
                 </>
               )}
             </div>

@@ -236,7 +236,6 @@ export const landingCss = `
 export const navIcons = {
   overview: "◈",
   browsing: "◉",
-  insights: "◆",
   wallet: "◎",
 };
 
