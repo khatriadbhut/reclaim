@@ -341,13 +341,26 @@ export default function UserDashboard() {
   const dollars = Math.floor(totalEarnings);
   const cents = ((totalEarnings - dollars) * 100).toFixed(0).padStart(2, "0");
 
+  const guestShellStyle = {
+    ...styles.landingWrap,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "32px 16px 48px",
+    boxSizing: "border-box",
+  };
+
   if (!authChecked) {
     return (
-      <div style={styles.landingWrap}>
-        <div style={{ ...styles.card, maxWidth: 720, margin: "60px auto" }}>
+      <div style={guestShellStyle}>
+        <div style={{ ...styles.card, maxWidth: 440, width: "100%", boxSizing: "border-box" }}>
           <div style={styles.cardLabel}>Loading</div>
-          <div style={{ color: "#bbb", fontFamily: "DM Mono, monospace", fontSize: 12, lineHeight: 1.7 }}>
-            Checking extension session…
+          <div style={{ fontFamily: "Syne, sans-serif", fontSize: 20, fontWeight: 800, letterSpacing: "-0.03em", color: "#f0f0f0", marginTop: 8 }}>
+            Checking your session
+          </div>
+          <div style={{ color: "#8a8a8a", fontFamily: "DM Mono, monospace", fontSize: 12, lineHeight: 1.65, marginTop: 10 }}>
+            Talking to the Reclaim extension…
           </div>
         </div>
       </div>
@@ -356,17 +369,17 @@ export default function UserDashboard() {
 
   if (!hasChromeStorage || !isLoggedIn) {
     return (
-      <div style={styles.landingWrap}>
-        <div style={{ ...styles.card, maxWidth: 840, margin: "60px auto" }}>
+      <div style={guestShellStyle}>
+        <div style={{ ...styles.card, maxWidth: 440, width: "100%", boxSizing: "border-box" }}>
           <div style={styles.cardLabel}>Sign in required</div>
-          <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: -0.5, marginTop: 10 }}>
-            Open the Reclaim extension and sign in first.
+          <h1 style={{ fontFamily: "Syne, sans-serif", fontSize: 24, fontWeight: 800, letterSpacing: "-0.03em", color: "#f0f0f0", margin: "8px 0 0", lineHeight: 1.15 }}>
+            Open the extension first
+          </h1>
+          <div style={{ marginTop: 12, color: "#8a8a8a", fontFamily: "DM Mono, monospace", fontSize: 13, lineHeight: 1.65 }}>
+            Use <strong style={{ color: "#b5b5b5" }}>Chrome</strong> with the <strong style={{ color: "#b5b5b5" }}>Reclaim</strong> extension. Open this page from the extension <strong style={{ color: "#b5b5b5" }}>Dashboard</strong> button (best), or refresh so the page can pair with the extension. IDE embedded browsers won’t work. Sign in inside the extension if you’re logged out there.
           </div>
-          <div style={{ marginTop: 14, color: "#888", fontFamily: "DM Mono, monospace", fontSize: 12, lineHeight: 1.8 }}>
-            Use <strong>Chrome</strong> with the <strong>Reclaim</strong> extension enabled. Open this page via the extension’s <strong>Dashboard</strong> button (recommended), or hard‑refresh after a second so the extension can inject its id. Embedded preview browsers won’t work. If you’re signed out in the extension, sign in there first.
-          </div>
-          <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
-            <a href="/" style={styles.ctaSecondary}>Back to landing</a>
+          <div style={{ display: "flex", gap: 10, marginTop: 22, flexWrap: "wrap", justifyContent: "center" }}>
+            <a href="/" style={styles.ctaSecondary}>← Home</a>
             <a href="/company" style={styles.ctaSecondary}>Reclaim Business</a>
           </div>
         </div>
@@ -392,34 +405,56 @@ export default function UserDashboard() {
         </nav>
         <div style={styles.sidebarFooter}>
           <div style={styles.statusDot} />
-          <span style={styles.statusText}>collecting data</span>
+          <span style={styles.statusText}>syncs when browsing</span>
         </div>
       </aside>
 
-      <main style={styles.main}>
-        <div style={styles.header}>
+      <main style={{ ...styles.main, paddingTop: 36 }}>
+        <div style={{ ...styles.header, paddingTop: 4, paddingRight: 8 }}>
           <div>
             <div style={styles.pageTitle}>{activeTab}</div>
             <div style={styles.pageSubtitle}>{new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</div>
           </div>
-          {walletConnected ? (
-            <div style={styles.walletBadge}>
-              <span style={styles.walletDot} />
-              {walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
-            </div>
+          {activeTab === "wallet" ? (
+            walletConnected ? (
+              <div style={styles.walletBadge}>
+                <span style={styles.walletDot} />
+                {walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
+              </div>
+            ) : (
+              <button type="button" style={styles.connectBtn} onClick={connectWallet}>Connect Wallet</button>
+            )
           ) : (
-            <button style={styles.connectBtn} onClick={connectWallet}>Connect Wallet</button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("wallet")}
+              style={{
+                background: "none",
+                border: "1px solid #2a2a2a",
+                color: "#888",
+                padding: "8px 14px",
+                borderRadius: 8,
+                cursor: "pointer",
+                fontSize: 11,
+                fontFamily: "Syne, sans-serif",
+                fontWeight: 700,
+              }}
+            >
+              {walletConnected
+                ? `Wallet ${walletAddress.slice(0, 4)}… →`
+                : "Wallet & payouts →"}
+            </button>
           )}
         </div>
 
         {activeTab === "overview" && (
           <div style={styles.grid}>
             <div style={{ ...styles.card, ...styles.cardAccent }}>
-              <div style={styles.cardLabel}>Total Earned</div>
+              <div style={styles.cardLabel}>Modeled total (lifetime)</div>
               <div style={styles.bigNumber}>
                 ${dollars}<span style={styles.bigNumberCents}>.{cents}</span>
               </div>
-              <div style={styles.cardSub}>today: ${todayEarnings.toFixed(4)}</div>
+              <div style={styles.cardSub}>today (modeled): ${todayEarnings.toFixed(4)} · not withdrawable yet</div>
             </div>
 
             <div style={styles.card}>
@@ -479,7 +514,7 @@ export default function UserDashboard() {
               <table style={styles.table}>
                 <thead>
                   <tr>
-                    {["Domain", "Category", "Time", "Visits", "Earned"].map((h) => (
+                    {["Domain", "Category", "Time", "Visits", "Modeled $"].map((h) => (
                       <th key={h} style={styles.th}>{h}</th>
                     ))}
                   </tr>
@@ -521,7 +556,7 @@ export default function UserDashboard() {
               </button>
             </div>
             <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
-              <div style={styles.cardLabel}>Data Value Breakdown</div>
+              <div style={styles.cardLabel}>Today’s modeled value by category</div>
               <div style={styles.catList}>
                 {sortedCats.map(([cat, data]) => (
                   <div key={cat} style={styles.catRow}>
@@ -544,9 +579,9 @@ export default function UserDashboard() {
         {activeTab === "wallet" && (
           <div style={styles.grid}>
             <div style={{ ...styles.card, ...styles.cardAccent }}>
-              <div style={styles.cardLabel}>Available Balance</div>
+              <div style={styles.cardLabel}>Modeled balance</div>
               <div style={styles.bigNumber}>${dollars}<span style={styles.bigNumberCents}>.{cents}</span></div>
-              <div style={styles.cardSub}>ready to withdraw</div>
+              <div style={styles.cardSub}>same estimate as overview · payouts not live yet</div>
             </div>
             <div style={styles.card}>
               <div style={styles.cardLabel}>Wallet Status</div>
@@ -565,9 +600,9 @@ export default function UserDashboard() {
               )}
             </div>
             <div style={{ ...styles.card, gridColumn: "1 / -1" }}>
-              <div style={styles.cardLabel}>Withdraw Funds</div>
+              <div style={styles.cardLabel}>Withdraw (roadmap)</div>
               <div style={{ color: "#666", fontSize: 13, fontFamily: "DM Mono, monospace", marginTop: 8, lineHeight: 1.6 }}>
-                Blockchain payments coming soon. Smart contracts will automate payouts — 80% to you, 20% platform fee.
+                On-chain payouts are not available yet. When they ship, the intent is automated settlement — e.g. 80% to you, 20% platform fee (exact terms TBD).
               </div>
               <button style={{ ...styles.connectBtn, marginTop: 16, opacity: 0.5, cursor: "not-allowed" }} disabled>
                 Withdraw (coming soon)
