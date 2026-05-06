@@ -286,6 +286,9 @@ function heuristicDomainRollup(domain, title, url) {
   const d = normalizeDomain(domain);
   if (!d) return null;
 
+  // Do not categorize local/dev hosts here. The extension ignores them for earnings/sessions.
+  if (d === "localhost" || d === "127.0.0.1" || d === "0.0.0.0" || d.endsWith(".local")) return null;
+
   const STOP = new Set([
     "www", "com", "net", "org", "co", "in", "io", "app", "dev",
     "the", "and", "for", "with", "from", "your", "you", "our", "us",
@@ -378,7 +381,7 @@ function heuristicDomainRollup(domain, title, url) {
     realestate: new Set(["realestate", "property", "properties", "rent", "rental", "housing", "apartment", "apartments", "flat", "villa", "broker"]),
     health: new Set(["health", "medical", "medicine", "doctor", "clinic", "hospital", "pharmacy", "pharma"]),
     food: new Set(["food", "restaurant", "restaurants", "delivery", "menu", "order", "dining", "recipe", "recipes"]),
-    technology: new Set(["developer", "developers", "software", "technology", "tech", "computer", "computing", "cloud", "saas", "api", "github", "docs", "documentation", "ai"]),
+    technology: new Set(["developer", "developers", "software", "technology", "tech", "computer", "computing", "cloud", "saas", "api", "github", "docs", "documentation", "ai", "chatgpt", "openai", "gpt", "claude", "gemini"]),
     education: new Set(["education", "course", "courses", "learn", "learning", "tutorial", "tutorials", "university", "college", "school", "reference"]),
     news: new Set(["news", "breaking", "politics", "political", "government", "election", "journal", "journalism", "newspaper"]),
     entertainment: new Set(["movie", "movies", "film", "music", "tv", "television", "streaming", "game", "games", "gaming", "sports"]),
@@ -393,7 +396,9 @@ function heuristicDomainRollup(domain, title, url) {
     { cat: "realestate", s: score(KW.realestate, 3) },
     { cat: "health", s: score(KW.health, 3) },
     { cat: "food", s: score(KW.food, 3) },
-    { cat: "technology", s: score(KW.technology, 2) },
+    // Tech domains (chatgpt/openai/claude/gemini/etc.) often have minimal titles/paths,
+    // so treat matching domain tokens as strong evidence (similar to jobs/travel).
+    { cat: "technology", s: score(KW.technology, 2) + score(new Set(domainTokens.filter((t) => KW.technology.has(t))), 4) },
     { cat: "education", s: score(KW.education, 2) },
     { cat: "news", s: score(KW.news, 2) },
     { cat: "entertainment", s: score(KW.entertainment, 2) },
@@ -405,7 +410,19 @@ function heuristicDomainRollup(domain, title, url) {
 
   // Conservative decision rule:
   // - Require at least 2 strong hits (or repeated token hits) and a clear margin.
-  if (!best || best.s < 6) return null;
+  if (!best) return null;
+
+  // Special-case: technology often has very short titles/paths and can be accurately inferred
+  // from the domain token alone (e.g. "openai", "chatgpt"). Allow a slightly lower threshold
+  // only when the domain token itself matches our strong tech keyword set.
+  const hasTechDomainToken = domainTokens.some((t) => KW.technology.has(t));
+  if (best.cat === "technology" && hasTechDomainToken) {
+    if (best.s < 4) return null;
+    if (best.s - (second.s || 0) < 2) return null;
+    return best.cat;
+  }
+
+  if (best.s < 6) return null;
   if (best.s - (second.s || 0) < 3) return null;
   return best.cat;
 }
@@ -1336,8 +1353,16 @@ app.post("/api/sync", async (req, res) => {
   if (!userId) return res.status(400).json({ error: "userId required" });
 
   const incoming = sessions || {};
-  await enrichSessionDaysWithIab(incoming);
-  userSessions[userId] = mergeSessionDays(userSessions[userId], incoming);
+  // Fast-path: merge immediately so sync returns quickly (UX),
+  // then enrich stored sessions asynchronously so the "whole sync" completes
+  // without making the client wait on network/vendor lookups.
+  const mergedSessions = mergeSessionDays(userSessions[userId], incoming);
+  userSessions[userId] = mergedSessions;
+  setTimeout(() => {
+    enrichSessionDaysWithIab(mergedSessions).catch((err) => {
+      console.error("Sync enrichment error:", err?.message || err);
+    });
+  }, 0);
   userVisitLogs[userId] = mergeVisitLogsById(
     userVisitLogs[userId],
     Array.isArray(visitLog) ? visitLog : []
@@ -1354,6 +1379,7 @@ app.post("/api/sync", async (req, res) => {
     status: "synced",
     userId,
     visitSegmentsStored: userVisitLogs[userId]?.length || 0,
+    enrichment: "scheduled",
   });
 });
 

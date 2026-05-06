@@ -210,6 +210,10 @@ export default function UserDashboard() {
   const [authChecked, setAuthChecked] = useState(false);
   const [hasChromeStorage, setHasChromeStorage] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [lastSyncOk, setLastSyncOk] = useState(null);
 
   useEffect(() => {
     if (activeTab === "insights") setActiveTab("overview");
@@ -228,6 +232,8 @@ export default function UserDashboard() {
         processData({}, 0);
         return;
       }
+      setLastSyncAt(typeof result.lastSyncAt === "number" ? result.lastSyncAt : null);
+      setLastSyncOk(typeof result.lastSyncOk === "boolean" ? result.lastSyncOk : null);
       processData(result.sessions || {}, result.totalEarnings || 0);
     }
 
@@ -333,6 +339,94 @@ export default function UserDashboard() {
       }
     } else {
       alert("MetaMask not found. Please install it.");
+    }
+  }
+
+  async function syncNow() {
+    if (syncBusy) return;
+    setSyncBusy(true);
+    setSyncMsg("syncing…");
+    try {
+      const extId = readReclaimExtensionId();
+      const rt = globalThis.chrome?.runtime;
+      if (!extId || !rt) throw new Error("extension not available");
+
+      const res = await new Promise((resolve, reject) => {
+        // Prefer MV3 port for reliability
+        if (rt.connect) {
+          let port;
+          try {
+            port = rt.connect(extId, { name: "reclaim-dashboard" });
+          } catch {
+            port = null;
+          }
+          if (port) {
+            let settled = false;
+            const tid = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              try { port.disconnect(); } catch { /* ignore */ }
+              reject(new Error("sync timed out"));
+            }, 25000);
+            port.onMessage.addListener((msg) => {
+              if (settled) return;
+              if (msg?.type !== "RECLAIM_SYNC_RESULT") return;
+              settled = true;
+              clearTimeout(tid);
+              try { port.disconnect(); } catch { /* ignore */ }
+              resolve(msg.payload || { ok: false, error: "unknown" });
+            });
+            port.onDisconnect.addListener(() => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(tid);
+              reject(new Error("extension disconnected"));
+            });
+            try {
+              port.postMessage({ type: "RECLAIM_SYNC_NOW" });
+            } catch {
+              clearTimeout(tid);
+              try { port.disconnect(); } catch { /* ignore */ }
+              reject(new Error("failed to start sync"));
+            }
+            return;
+          }
+        }
+
+        if (!rt.sendMessage) {
+          reject(new Error("extension messaging unavailable"));
+          return;
+        }
+        try {
+          rt.sendMessage(extId, { type: "RECLAIM_SYNC_NOW" }, (response) => {
+            const le = globalThis.chrome?.runtime?.lastError;
+            if (le) reject(new Error(String(le.message || le)));
+            else resolve(response || { ok: false, error: "unknown" });
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+
+      const ok = !!res?.ok;
+      const at = typeof res?.at === "number" ? res.at : Date.now();
+      setLastSyncAt(at);
+      setLastSyncOk(ok);
+      setSyncMsg(ok ? "synced" : "sync failed");
+
+      // Pull updated storage so the UI refreshes immediately after a sync.
+      const viaExt = await requestExtensionStateViaExternal(3000);
+      if (viaExt.ok) {
+        const payload = viaExt.payload || {};
+        setLastSyncAt(typeof payload.lastSyncAt === "number" ? payload.lastSyncAt : at);
+        setLastSyncOk(typeof payload.lastSyncOk === "boolean" ? payload.lastSyncOk : ok);
+        processData(payload.sessions || {}, payload.totalEarnings || 0);
+      }
+    } catch (e) {
+      setSyncMsg(e?.message ? String(e.message) : "sync failed");
+    } finally {
+      setSyncBusy(false);
+      setTimeout(() => setSyncMsg(""), 2500);
     }
   }
 
@@ -455,7 +549,35 @@ export default function UserDashboard() {
         </nav>
         <div style={styles.sidebarFooter}>
           <div style={styles.statusDot} />
-          <span style={styles.statusText}>syncs when browsing</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+            <span style={styles.statusText}>
+              {lastSyncAt
+                ? `last sync: ${new Date(lastSyncAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${lastSyncOk === false ? " (failed)" : ""}`
+                : "syncs when browsing"}
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={syncNow}
+                disabled={syncBusy}
+                style={{
+                  ...styles.refreshBtn,
+                  marginTop: 0,
+                  padding: "6px 10px",
+                  borderRadius: 8,
+                  color: syncBusy ? "#555" : "#888",
+                  cursor: syncBusy ? "not-allowed" : "pointer",
+                }}
+              >
+                {syncBusy ? "Syncing…" : "Sync now"}
+              </button>
+              {syncMsg ? (
+                <span style={{ color: syncMsg === "synced" ? "#00e5a0" : "#ff6b6b", fontFamily: "DM Mono, monospace", fontSize: 10 }}>
+                  {syncMsg}
+                </span>
+              ) : null}
+            </div>
+          </div>
         </div>
       </aside>
 

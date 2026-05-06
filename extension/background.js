@@ -29,6 +29,9 @@ const DASHBOARD_STORAGE_KEYS = [
   "userName",
   "userEmail",
   "userPicture",
+  "lastSyncAt",
+  "lastSyncOk",
+  "lastSyncError",
 ];
 
 // Chrome's `externally_connectable` in manifest.json already enforces which origins
@@ -37,12 +40,31 @@ const DASHBOARD_STORAGE_KEYS = [
 // causing the old check to silently reject valid messages from signed-in users.
 
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== "RECLAIM_GET_STORAGE") return false;
-  chrome.storage.local
-    .get(DASHBOARD_STORAGE_KEYS)
-    .then((result) => sendResponse(result || {}))
-    .catch(() => sendResponse({}));
-  return true;
+  if (!message || !message.type) return false;
+  if (message.type === "RECLAIM_GET_STORAGE") {
+    chrome.storage.local
+      .get(DASHBOARD_STORAGE_KEYS)
+      .then((result) => sendResponse(result || {}))
+      .catch(() => sendResponse({}));
+    return true;
+  }
+  if (message.type === "RECLAIM_SYNC_NOW") {
+    (async () => {
+      try {
+        await syncToBackend();
+        const now = Date.now();
+        await chrome.storage.local.set({ lastSyncAt: now, lastSyncOk: true, lastSyncError: null });
+        sendResponse({ ok: true, at: now });
+      } catch (err) {
+        const now = Date.now();
+        const msg = err?.message ? String(err.message) : "sync failed";
+        await chrome.storage.local.set({ lastSyncAt: now, lastSyncOk: false, lastSyncError: msg });
+        sendResponse({ ok: false, at: now, error: msg });
+      }
+    })();
+    return true;
+  }
+  return false;
 });
 
 chrome.runtime.onConnectExternal.addListener((port) => {
@@ -51,14 +73,40 @@ chrome.runtime.onConnectExternal.addListener((port) => {
     return;
   }
   port.onMessage.addListener((msg) => {
-    if (!msg || msg.type !== "RECLAIM_GET_STORAGE") return;
-    chrome.storage.local.get(DASHBOARD_STORAGE_KEYS).then((result) => {
-      try {
-        port.postMessage({ type: "RECLAIM_STORAGE", payload: result || {} });
-      } catch {
-        /* port may be gone */
-      }
-    });
+    if (!msg || !msg.type) return;
+    if (msg.type === "RECLAIM_GET_STORAGE") {
+      chrome.storage.local.get(DASHBOARD_STORAGE_KEYS).then((result) => {
+        try {
+          port.postMessage({ type: "RECLAIM_STORAGE", payload: result || {} });
+        } catch {
+          /* port may be gone */
+        }
+      });
+      return;
+    }
+    if (msg.type === "RECLAIM_SYNC_NOW") {
+      (async () => {
+        try {
+          await syncToBackend();
+          const now = Date.now();
+          await chrome.storage.local.set({ lastSyncAt: now, lastSyncOk: true, lastSyncError: null });
+          try {
+            port.postMessage({ type: "RECLAIM_SYNC_RESULT", payload: { ok: true, at: now } });
+          } catch {
+            /* port may be gone */
+          }
+        } catch (err) {
+          const now = Date.now();
+          const msgText = err?.message ? String(err.message) : "sync failed";
+          await chrome.storage.local.set({ lastSyncAt: now, lastSyncOk: false, lastSyncError: msgText });
+          try {
+            port.postMessage({ type: "RECLAIM_SYNC_RESULT", payload: { ok: false, at: now, error: msgText } });
+          } catch {
+            /* port may be gone */
+          }
+        }
+      })();
+    }
   });
 });
 
@@ -376,6 +424,21 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
   const domain = getDomain(url);
   if (!domain) return;
 
+  // Never pay/track local development hosts.
+  // Otherwise users can keep localhost open and farm earnings.
+  const d = String(domain).toLowerCase();
+  if (
+    d === "localhost" ||
+    d === "127.0.0.1" ||
+    d === "0.0.0.0" ||
+    d.endsWith(".local") ||
+    /^10\.\d+\.\d+\.\d+$/.test(d) ||
+    /^192\.168\.\d+\.\d+$/.test(d) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(d)
+  ) {
+    return;
+  }
+
   const extracted = await extractData(domain, title);
   const todayKey = getTodayKey();
   const result = await chrome.storage.local.get(["sessions", "totalEarnings"]);
@@ -460,17 +523,23 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
 // ─── SYNC ─────────────────────────────────────────────────────────────────────
 
 async function syncToBackend() {
-  try {
-    const userId = await getUserId();
-    const result = await chrome.storage.local.get(["sessions", "totalEarnings", "userLocation", "userProfile"]);
-    await fetch(`${BACKEND_URL}/api/sync`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        userId, sessions: result.sessions || {}, totalEarnings: result.totalEarnings || 0,
-        profile: { ...(result.userProfile || {}), location: result.userLocation || {} }
-      })
-    });
-  } catch (err) { console.error("Reclaim: sync failed", err.message); }
+  const userId = await getUserId();
+  const result = await chrome.storage.local.get(["sessions", "totalEarnings", "userLocation", "userProfile"]);
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), 15000);
+  const res = await fetch(`${BACKEND_URL}/api/sync`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    signal: controller.signal,
+    body: JSON.stringify({
+      userId, sessions: result.sessions || {}, totalEarnings: result.totalEarnings || 0,
+      profile: { ...(result.userProfile || {}), location: result.userLocation || {} }
+    })
+  }).finally(() => clearTimeout(tid));
+  if (!res.ok) {
+    let text = "";
+    try { text = await res.text(); } catch { /* ignore */ }
+    throw new Error(text || `sync failed (${res.status})`);
+  }
 }
 
 // ─── TAB TRACKING ─────────────────────────────────────────────────────────────
@@ -520,7 +589,15 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await saveSession(activeTabUrl, activeTabTitle, (Date.now() - activeTabStart) / 1000, pendingContentData[domain] || {});
     activeTabStart = Date.now();
   }
-  if (alarm.name === "syncToBackend") await syncToBackend();
+  if (alarm.name === "syncToBackend") {
+    try {
+      await syncToBackend();
+      await chrome.storage.local.set({ lastSyncAt: Date.now(), lastSyncOk: true, lastSyncError: null });
+    } catch (err) {
+      await chrome.storage.local.set({ lastSyncAt: Date.now(), lastSyncOk: false, lastSyncError: err?.message ? String(err.message) : "sync failed" });
+      console.error("Reclaim: sync failed", err?.message || err);
+    }
+  }
   if (alarm.name === "refreshLocation") await refreshLocationSilently();
 });
 
