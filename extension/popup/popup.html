@@ -40,6 +40,8 @@
     .login-prompt { padding: 24px 20px; text-align: center; }
     .login-prompt-title { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
     .login-prompt-sub { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; line-height: 1.5; margin-bottom: 20px; }
+    .btn-setup { width: 100%; padding: 12px 16px; background: var(--accent); border: none; border-radius: 8px; color: #000; font-size: 13px; font-family: 'Syne', sans-serif; font-weight: 800; cursor: pointer; transition: opacity 0.15s; }
+    .btn-setup:hover { opacity: 0.9; }
     .google-btn-sm { width: 100%; padding: 10px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; font-family: 'Syne', sans-serif; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; transition: all 0.2s; }
     .google-btn-sm:hover { border-color: var(--accent); color: var(--accent); }
     .google-icon-sm { width: 16px; height: 16px; }
@@ -99,7 +101,16 @@
     </div>
   </div>
 
-  <!-- Logged out -->
+  <!-- Onboarding not finished (new install or mid-flow) — no Google sign-in here -->
+  <div id="setupRequiredView" class="hidden">
+    <div class="login-prompt">
+      <div class="login-prompt-title" id="setupTitle">Set up Reclaim</div>
+      <div class="login-prompt-sub" id="setupSub">Consent and profile happen in a full tab first — then you can use this popup.</div>
+      <button type="button" class="btn-setup" id="openOnboardingBtn">Open setup</button>
+    </div>
+  </div>
+
+  <!-- Logged out (has completed onboarding before) -->
   <div id="loggedOutView" class="hidden">
     <div class="login-prompt">
       <div class="login-prompt-title">Sign in to Reclaim</div>

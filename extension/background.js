@@ -228,9 +228,10 @@ async function signOutGoogle() {
 
   await chrome.storage.local.remove([
     "userId", "userName", "userEmail", "userPicture",
-    "accessToken", "isLoggedIn", "onboardingComplete",
+    "accessToken", "isLoggedIn",
     "cachedInsight", "insightTimestamp"
   ]);
+  // Keep onboardingComplete so logged-out users can sign in from the popup without redoing full setup.
 }
 
 async function refreshLocationSilently() {
@@ -458,8 +459,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === "GET_AUTH_STATE") {
-    chrome.storage.local.get(["isLoggedIn", "userId", "userName", "userEmail", "userPicture"])
-      .then(result => sendResponse(result)).catch(() => sendResponse({}));
+    chrome.storage.local
+      .get(["isLoggedIn", "userId", "userName", "userEmail", "userPicture", "onboardingComplete"])
+      .then((result) => sendResponse(result))
+      .catch(() => sendResponse({}));
     return true;
   }
   if (message.type === "OPEN_USER_DASHBOARD") {

@@ -24,6 +24,12 @@ async function openUserDashboardTab() {
 
 async function checkAuthAndRender() {
   const state = await chrome.runtime.sendMessage({ type: "GET_AUTH_STATE" });
+  const onboardingDone = state?.onboardingComplete === true;
+
+  if (!onboardingDone) {
+    showSetupRequired(state);
+    return;
+  }
 
   if (state && state.isLoggedIn) {
     showLoggedIn(state);
@@ -32,14 +38,41 @@ async function checkAuthAndRender() {
   }
 }
 
-function showLoggedOut() {
-  document.getElementById("loggedOutView").classList.remove("hidden");
+function hideAllMainViews() {
+  document.getElementById("setupRequiredView").classList.add("hidden");
+  document.getElementById("loggedOutView").classList.add("hidden");
   document.getElementById("loggedInView").classList.add("hidden");
+}
+
+function showSetupRequired(state) {
+  hideAllMainViews();
+  document.getElementById("setupRequiredView").classList.remove("hidden");
+  document.getElementById("userAvatarContainer").innerHTML = "";
+
+  const loggedIn = !!(state && state.isLoggedIn);
+  document.getElementById("setupTitle").textContent = loggedIn ? "Finish setup" : "Set up Reclaim";
+  document.getElementById("setupSub").textContent = loggedIn
+    ? "You’re signed in — finish onboarding (profile & location) in the setup tab."
+    : "Review consent and create your account in a full tab first. Then this popup unlocks.";
+
+  const btn = document.getElementById("openOnboardingBtn");
+  btn.textContent = loggedIn ? "Continue setup" : "Open setup";
+  btn.onclick = () => {
+    const base = chrome.runtime.getURL("onboarding/onboarding.html");
+    const url = loggedIn ? `${base}?returning=true` : base;
+    chrome.tabs.create({ url, active: true });
+    window.close();
+  };
+}
+
+function showLoggedOut() {
+  hideAllMainViews();
+  document.getElementById("loggedOutView").classList.remove("hidden");
   document.getElementById("userAvatarContainer").innerHTML = "";
 }
 
 function showLoggedIn(state) {
-  document.getElementById("loggedOutView").classList.add("hidden");
+  hideAllMainViews();
   document.getElementById("loggedInView").classList.remove("hidden");
 
   // Avatar in header
