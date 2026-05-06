@@ -9,7 +9,7 @@ const ROTATING_ENDINGS = ["value.", "privacy.", "control.", "safety.", "fairness
    TRUST ITEMS
 ───────────────────────────────────────── */
 const TRUST = [
-  { k: "Opt‑in",       v: "You choose what's shared" },
+  { k: "Opt‑in",       v: "Disclosure + consent before sync" },
   { k: "Anonymous",    v: "No names sold" },
   { k: "Transparent",  v: "See modeled breakdown" },
   { k: "Safe",         v: "Privacy-first design" },
@@ -24,8 +24,8 @@ const PRODUCT_CARDS = [
     tag: "// reclaim consumer",
     tone: "user",
     title: "Track value.\nStay anonymous.",
-    body: "Opt in to share browsing signals on your terms. See modeled earnings in your dashboard — pseudonymous IDs, no names sold.",
-    bullets: ["opt-in only", "pseudonymous", "modeled earnings", "full control"],
+    body: "Explicit consent first: terms, sign-in, onboarding — then browsing signals sync. Modeled earnings in your dashboard; pseudonymous IDs, no names sold.",
+    bullets: ["opt-in program", "pseudonymous", "modeled earnings", "see what we collect"],
     href: "/user",
     cta: "Open dashboard →",
   },
@@ -45,7 +45,7 @@ const PRODUCT_CARDS = [
    HOW-IT-WORKS STEPS
 ───────────────────────────────────────── */
 const STEPS = [
-  { n: "01", icon: "⬡", t: "Opt in",    d: "Choose exactly what you share. Nothing runs without your say." },
+  { n: "01", icon: "⬡", t: "Opt in",    d: "We disclose what’s collected; you agree in onboarding and sign in. Sync starts after setup — not before." },
   { n: "02", icon: "◎", t: "Anonymize", d: "Signals are stripped + aggregated. No identities ever sold." },
   { n: "03", icon: "⬖", t: "Exchange",  d: "Users track modeled value; businesses buy privacy-safe packages. Cash payouts — roadmap." },
 ];
