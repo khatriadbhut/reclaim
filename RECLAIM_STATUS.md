@@ -1,5 +1,5 @@
 # Reclaim — Project Status Document
-> Last updated: 2026-05-06
+> Last updated: 2026-05-07
 > Version: 0.10.0
 > Repo: https://github.com/khatriadbhut/reclaim
 
@@ -276,6 +276,87 @@ A production-grade content script injected into every page via Manifest v3 `cont
 | GET | `/api/health` | Health / counts |
 
 **Storage:** in-memory maps for users, sessions, companies, purchases (resets on server restart).
+
+**Robust domain categorization (WhoisXML + persistent cache + conservative heuristic fallback)**
+
+Goal: reduce the number of visits stuck in `other` while staying quota-aware and avoiding “category flapping” (the same domain bouncing between buckets).
+
+#### 1) Categorization pipeline (in order)
+
+For a given `domain` (and optional `title`, `url`), `server.js` computes a **domain rollup** using this order:
+
+1. **Registry mapping** (`backend/domain-categories.json`)
+   - Fast, deterministic internal mapping.
+   - `domain_source: "registry"`
+2. **Persistent enrichment cache** (`backend/domain-enrichment.json`)
+   - Stores vendor output so we don’t re-call WhoisXML for the same domain across devices.
+   - `domain_source: "enrichment_store"`
+   - If cached vendor categories exist, we also attach `iab_provider` + `iab_categories` (for export enrichment).
+3. **In-memory cache (TTL)** (`categoryCache`)
+   - Prevents repeated work within the same server process.
+   - `domain_source` reflects the cached prior source (e.g. `whoisxml_unmapped`, `heuristic`, etc.)
+4. **Title/URL heuristic (conservative scored fallback)**
+   - Uses *domain tokens + title tokens + URL path tokens*.
+   - Filters gibberish/tracking tokens (hash-like ids, long numeric strings, query params).
+   - Only returns a category when there is a **clear winner** above a threshold (avoids random URL words causing misclassification).
+   - `domain_source: "heuristic"`
+5. **WhoisXML Website Categorization API (optional, quota-limited)**
+   - Called only if `WHOISXML_API_KEY` is set and usage quota allows.
+   - Stores top vendor categories (confidence-sorted) and a strict mapped rollup when mapping is confident.
+   - `domain_source: "whoisxml"` if a strict rollup mapping succeeded.
+   - `domain_source: "whoisxml_unmapped"` if vendor categories exist but mapping didn’t land into our 13 buckets.
+   - `domain_source: "whoisxml_no_categories"` if vendor returns no usable categories (including `Uncategorized` with 0 confidence).
+6. **Gemini domain lookup (optional tie-breaker)**
+   - Only if `ALLOW_GEMINI_DOMAIN_LOOKUP=1`
+   - Used for unknown domains that still can’t be categorized by the steps above.
+   - `domain_source: "gemini" | "gemini_low_confidence" | "gemini_error" | "gemini_reject"`
+
+This domain rollup then flows into `POST /api/classify-visit`, where it is merged with **page evidence** (pageTypes / checkout/product/prices, etc.) to produce the final `category`.
+
+#### 2) Why popular sites can still show as `other`
+
+Even famous domains can fail vendor categorization because the vendor has to fetch/interpret the site at that moment:
+
+- Bot protection / WAF blocks
+- Heavy JS rendering or aggressive redirects
+- Region variants behaving differently (`.co.in` vs `.com`)
+- Vendor simply returning `Uncategorized` with confidence 0
+
+This is exactly why we added a strong **title + URL path heuristic**: if the vendor returns empty/uncategorized, we can still classify many visits correctly based on page context (e.g. “Job Search / Salaries” → `jobs`, “Cheap Flights & Hotels” → `travel`).
+
+#### 3) Caching behavior (and why “other” won’t get stuck)
+
+We cache vendor outputs for quota efficiency, but we avoid freezing bad results:
+
+- **Persistent vendor cache** (`domain-enrichment.json`) prevents repeated WhoisXML calls.
+- **Local remap upgrade**: if we previously saved vendor categories but mapped them to `other`, we can re-run the mapping locally after rule improvements and “upgrade” `other → <bucket>` without burning additional quota.
+- **Uncategorized/empty vendor handling**: if the vendor output is effectively empty (only `Uncategorized` or confidence 0), we treat it as `whoisxml_no_categories` and allow heuristic fallback rather than persisting “fake” categories.
+
+#### 4) Clash prevention (important)
+
+The heuristic is intentionally conservative and **only used as an override when the result would otherwise be `other`**. If a domain is already confidently categorized (e.g. `travel`, `jobs`, `finance`), the heuristic does not override it—preventing category clashes.
+
+#### 5) Env knobs (tunable)
+
+- `WHOISXML_API_KEY`: enables vendor categorization (quota-limited)
+- `WHOISXML_FREE_LIMIT`: used for quota tracking/status endpoint (default 100)
+- `WHOISXML_MIN_CONFIDENCE`: strict mapping threshold (default tuned to be practical; raise to be more conservative)
+- `ALLOW_GEMINI_DOMAIN_LOOKUP`: if `1`, allows Gemini as a final tie-breaker for unknown domains
+
+#### 6) How to verify quickly (dev)
+
+Run `/api/classify-visit` with a realistic `title` + `url` and inspect `.category` and `.domain_source`:
+
+```bash
+curl -s -X POST http://localhost:3000/api/classify-visit \
+  -H 'Content-Type: application/json' \
+  -d '{"domain":"glassdoor.co.in","title":"Job Search | Salaries | Company Reviews","url":"https://www.glassdoor.co.in/Job/index.htm","pageType":"homepage","pageTypes":["homepage"]}' \
+  | jq '.category,.domain_source'
+```
+
+Expected behavior:
+- Vendor failures should show `domain_source: "heuristic_override"` when the title/url signals are strong.
+- Vendor successes should show `domain_source: "whoisxml"` or `domain_source: "enrichment_store"` and should **not** be overridden unless they were `other`.
 
 **Auto-assigned audience segments** (in `/api/profile` and on exports):
 

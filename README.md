@@ -99,6 +99,14 @@ If you use **Reclaim Business** (`/company`), set the `COMPANY_*` variables in `
 
 Template: **`.env.example`** at repo root — copy to **`backend/.env`** (`cp .env.example backend/.env` from the root, or `cp ../.env.example .env` after `cd backend`).
 
+### Robust domain categorization (how it works)
+
+When enabled (`WHOISXML_API_KEY`), the backend uses a layered approach so fewer domains end up as `other`:
+
+- **Persistent vendor cache**: results are stored in `backend/domain-enrichment.json` so we don’t re-call WhoisXML for the same domain across devices.
+- **Mapping improvements apply retroactively**: if a domain has cached vendor categories but was previously mapped to `other`, the backend can re-map those cached categories locally (no quota burn) after rules improve.
+- **Conservative title/URL fallback**: if WhoisXML returns no usable categories (including `Uncategorized` with 0 confidence), we fall back to a scored title + URL heuristic. This fallback only triggers when the result would otherwise be `other` to avoid clashes.
+
 ## Changing API / dashboard URLs (production)
 
 For anything other than localhost, update:

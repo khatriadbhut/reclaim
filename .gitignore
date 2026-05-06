@@ -25,6 +25,11 @@ build/
 # Logs
 *.log
 
+# Backend runtime caches / vendor enrichment (generated locally)
+backend/domain-enrichment.json
+backend/whoisxml-usage.json
+backend/learned-domain-categories.json
+
 # Extension packed file
 *.crx
 *.pem

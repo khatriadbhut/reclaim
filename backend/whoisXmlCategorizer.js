@@ -2,21 +2,35 @@ const WHOISXML_ENDPOINT = "https://website-categorization.whoisxmlapi.com/api/v3
 
 function mapWhoisXmlCategoryToReclaim(name) {
   const n = String(name || "").toLowerCase();
-  if (n.includes("news")) return "news";
-  if (n.includes("politic")) return "news";
-  if (n.includes("business") || n.includes("finance") || n.includes("banking") || n.includes("invest")) return "finance";
-  if (n.includes("shopping") || n.includes("e-commerce") || n.includes("ecommerce") || n.includes("retail")) return "shopping";
-  if (n.includes("social network") || /\bsocial\b/.test(n)) return "social";
-  if (n.includes("education") || n.includes("reference") || n.includes("training")) return "education";
-  if (n.includes("health") || n.includes("medical") || n.includes("medicine")) return "health";
-  if (n.includes("travel") || n.includes("hotel") || n.includes("airline") || n.includes("tourism")) return "travel";
-  if (n.includes("computer") || n.includes("software") || n.includes("technology") || n.includes("internet")) return "technology";
-  if (n.includes("food") || n.includes("restaurant")) return "food";
-  if (n.includes("real estate") || n.includes("property")) return "realestate";
-  if (n.includes("career") || n.includes("jobs") || n.includes("employment")) return "jobs";
-  if (n.includes("entertainment") || n.includes("television") || n.includes("movies") || n.includes("music") || n.includes("media")) {
-    return "entertainment";
+  // Normalize a few common variants
+  const s = n.replace(/&/g, "and");
+
+  // --- High precision first ---
+  if (/\b(real estate|real-estate|property|properties|housing|apartments?)\b/.test(s)) return "realestate";
+  if (/\b(job|jobs|career|careers|employment|recruit|recruiting|recruitment|hr|human resources|talent|hiring|resume|cv)\b/.test(s)) return "jobs";
+  if (/\b(travel|tourism|hotel|hotels|airline|air travel|flights?|booking|vacation|trip|transportation|ride share|rideshare|car rental|rail)\b/.test(s)) return "travel";
+  if (/\b(shopping|retail|e-?commerce|marketplace|coupons?|deals?|discounts?)\b/.test(s)) return "shopping";
+  if (/\b(bank|banking|finance|financial|fintech|insurance|invest|investment|trading|broker|brokerage|stocks?|equity|crypto|loans?|mortgage|credit|credit card|payments?|payment processing|vc|venture capital|private equity)\b/.test(s)) {
+    return "finance";
   }
+  if (/\b(news|newspaper|journalism|current events|media|press|politic|government|international affairs)\b/.test(s)) return "news";
+  if (/\b(social network|social networking|social media|community|forums?|messaging|chat|dating)\b/.test(s)) return "social";
+  if (/\b(health|healthy living|wellness|fitness|medical|medicine|pharma|pharmaceutical|doctor|clinic|hospital|disease)\b/.test(s)) return "health";
+  if (/\b(education|training|courses?|learning|university|college|school|reference|tutorials?)\b/.test(s)) return "education";
+
+  // --- Broader tech coverage (common vendor labels) ---
+  if (
+    /\b(technology|tech|computer|computing|software|internet|web|developer|programming|cloud|saas|ai|artificial intelligence|it services|information technology|hosting|data center|cybersecurity|security)\b/.test(s)
+  ) {
+    return "technology";
+  }
+
+  // --- Entertainment ---
+  if (/\b(entertainment|television|tv|movies?|film|music|streaming|games?|gaming|sports)\b/.test(s)) return "entertainment";
+
+  // --- Food ---
+  if (/\b(food|restaurant|dining|recipes?|cuisine|delivery|takeout|groceries?)\b/.test(s)) return "food";
+
   return null;
 }
 
@@ -29,7 +43,7 @@ export function pickStrictWhoisMapping(categories, minConfidence) {
       name: String(c.name || "").trim(),
       confidence: typeof c.confidence === "number" ? c.confidence : null,
     }))
-    .filter((c) => c.name && c.confidence != null && c.confidence >= minConfidence)
+    .filter((c) => c.name && c.confidence != null && c.confidence > 0 && c.confidence >= minConfidence)
     .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
 
   for (const c of ranked) {

@@ -6,6 +6,7 @@ import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createDomainCategoryStore, normDomain as normalizeDomainKey } from "./domainCategoryStore.js";
+import { createDomainEnrichmentStore } from "./domainEnrichmentStore.js";
 import { createApiUsageStore } from "./apiUsageStore.js";
 import { pickStrictWhoisMapping, whoisXmlLookup } from "./whoisXmlCategorizer.js";
 import { loadIabContentTaxonomyV3 } from "./iabContentTaxonomy.js";
@@ -79,6 +80,92 @@ function normalizePricesFound(pricesFound) {
     const raw = String(p ?? "").trim();
     return { raw, currency: "INR", amount: parsePriceAmount(raw) };
   });
+}
+
+function looksLikeEmail(s) {
+  return /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i.test(String(s || ""));
+}
+
+function looksLikePhone(s) {
+  const t = String(s || "");
+  // Very loose: catches +91..., (555) 555-5555, 10+ digits sequences
+  return /(\+?\d[\d\s().-]{8,}\d)/.test(t) && (t.replace(/\D/g, "").length >= 10);
+}
+
+function looksLikeUrl(s) {
+  const t = String(s || "");
+  return /\bhttps?:\/\//i.test(t) || /\bwww\./i.test(t);
+}
+
+function sanitizeQueryList(list, opts = {}) {
+  const maxItems = Number.isFinite(opts.maxItems) ? opts.maxItems : 15;
+  const maxLen = Number.isFinite(opts.maxLen) ? opts.maxLen : 120;
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(list) ? list : []) {
+    let q = String(raw || "").trim().replace(/\s+/g, " ");
+    if (!q) continue;
+    if (q.length > maxLen) q = q.slice(0, maxLen);
+    // Drop obvious PII / direct identifiers
+    if (looksLikeEmail(q) || looksLikePhone(q) || looksLikeUrl(q)) continue;
+    // Drop likely file paths / local paths
+    if (/[\\/].*[\\/]/.test(q) && q.length > 20) continue;
+    const key = q.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(q);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+const SAFE_BREADCRUMB_TERMS = new Set([
+  "home", "tools", "tool", "shop", "shopping", "category", "categories",
+  "electronics", "mobiles", "mobile", "computers", "accessories", "fashion",
+  "beauty", "grocery", "books", "music", "sports", "travel",
+]);
+
+function sanitizeBreadcrumbs(list, opts = {}) {
+  const maxItems = Number.isFinite(opts.maxItems) ? opts.maxItems : 10;
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(list) ? list : []) {
+    let b = String(raw || "").trim().replace(/\s+/g, " ");
+    if (!b) continue;
+    if (looksLikeEmail(b) || looksLikePhone(b) || looksLikeUrl(b)) continue;
+    if (b === "›" || b === ">" || b === "/") continue;
+    // Prefer category-like breadcrumbs; drop probable usernames/handles/repo slugs.
+    const isSafe =
+      /[A-Z]/.test(b) ||
+      /[ &]/.test(b) ||
+      SAFE_BREADCRUMB_TERMS.has(b.toLowerCase());
+    if (!isSafe) continue;
+    const key = b.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(b);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
+function sanitizeKeywordList(list, opts = {}) {
+  const maxItems = Number.isFinite(opts.maxItems) ? opts.maxItems : 20;
+  const maxLen = Number.isFinite(opts.maxLen) ? opts.maxLen : 48;
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(list) ? list : []) {
+    let k = String(raw || "").trim().replace(/\s+/g, " ");
+    if (!k) continue;
+    if (k.length > maxLen) k = k.slice(0, maxLen);
+    if (looksLikeEmail(k) || looksLikePhone(k) || looksLikeUrl(k)) continue;
+    const key = k.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(k);
+    if (out.length >= maxItems) break;
+  }
+  return out;
 }
 
 function inferQueryInsightsBase(queries) {
@@ -175,13 +262,17 @@ const domainCategoryStorePromise = createDomainCategoryStore({
   storePath: path.join(__dirname, "domain-categories.json"),
   legacyLearnedPath: path.join(__dirname, "learned-domain-categories.json"),
 });
+const domainEnrichmentStorePromise = createDomainEnrichmentStore({
+  storePath: path.join(__dirname, "domain-enrichment.json"),
+});
 
 const whoisUsageStorePromise = createApiUsageStore({
   storePath: path.join(__dirname, "whoisxml-usage.json"),
   defaultLimit: Number(process.env.WHOISXML_FREE_LIMIT || 100),
 });
 
-const WHOIS_MIN_CONFIDENCE = Number(process.env.WHOISXML_MIN_CONFIDENCE || 0.9);
+// WhoisXML often returns useful categories in the ~0.6–0.85 range; default to a practical threshold.
+const WHOIS_MIN_CONFIDENCE = Number(process.env.WHOISXML_MIN_CONFIDENCE || 0.6);
 const GEMINI_DOMAIN_MIN_CONFIDENCE = Number(process.env.GEMINI_DOMAIN_MIN_CONFIDENCE || 0.86);
 const ALLOW_GEMINI_DOMAIN_LOOKUP = String(process.env.ALLOW_GEMINI_DOMAIN_LOOKUP || "0") === "1";
 const CLASSIFY_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
@@ -191,18 +282,132 @@ function normalizeDomain(domain) {
   return normalizeDomainKey(domain);
 }
 
-function heuristicDomainRollup(domain, title) {
+function heuristicDomainRollup(domain, title, url) {
   const d = normalizeDomain(domain);
-  const t = String(title || "").toLowerCase();
   if (!d) return null;
-  if (/\b(pay|payments|upi|bank|loan|insurance|sip|mutual|demat|broker|trading)\b/.test(d) || /\b(emi|loan|sip|mutual fund|insurance)\b/.test(t)) return "finance";
-  if (/\b(job|jobs|career|careers|hiring|recruit)\b/.test(d) || /\b(apply now|we are hiring)\b/.test(t)) return "jobs";
-  if (/\b(hotel|flight|booking|airline|trip|travel)\b/.test(d) || /\b(book flight|book hotel)\b/.test(t)) return "travel";
-  if (/\b(pharma|health|clinic|doctor|medicine)\b/.test(d)) return "health";
-  if (/\b(food|delivery|restaurant)\b/.test(d)) return "food";
-  if (/\b(realestate|property|properties|flat|apartment|villa)\b/.test(d) || /\b(bhk)\b/.test(t)) return "realestate";
-  if (/\b(shop|store|cart|checkout|market)\b/.test(d)) return "shopping";
-  return null;
+
+  const STOP = new Set([
+    "www", "com", "net", "org", "co", "in", "io", "app", "dev",
+    "the", "and", "for", "with", "from", "your", "you", "our", "us",
+    "home", "index", "main", "page", "pages", "site", "web",
+    "login", "signin", "sign", "signup", "register", "account",
+    "amp", "utm", "ref", "source", "medium", "campaign",
+  ]);
+
+  const normText = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[%+_]+/g, " ")
+      .replace(/[-/]+/g, " ")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const looksGibberishToken = (tok) => {
+    if (!tok) return true;
+    if (tok.length < 2 || tok.length > 24) return true;
+    if (STOP.has(tok)) return true;
+    if (/^\d+$/.test(tok)) return true;
+    // Drop tokens that are mostly digits or hex-ish (ids, hashes)
+    if (/^[0-9a-f]{10,}$/i.test(tok)) return true;
+    if (/\d/.test(tok) && tok.length >= 8) return true;
+    // Require at least 2 letters for meaning
+    const letters = tok.replace(/[^a-z]/g, "").length;
+    if (letters < 2) return true;
+    return false;
+  };
+
+  const tokensFromText = (s) => {
+    const out = [];
+    const txt = normText(s);
+    if (!txt) return out;
+    for (const tok of txt.split(" ")) {
+      const t = tok.trim();
+      if (looksGibberishToken(t)) continue;
+      out.push(t);
+    }
+    return out;
+  };
+
+  const tokensFromDomain = (dom) => {
+    const parts = String(dom || "").toLowerCase().split(".");
+    const core = parts.slice(0, Math.max(1, parts.length - 1)); // drop TLD
+    const out = [];
+    for (const p of core) {
+      for (const tok of p.split("-")) {
+        const t = tok.trim();
+        if (looksGibberishToken(t)) continue;
+        out.push(t);
+      }
+    }
+    return out;
+  };
+
+  const tokensFromUrlPath = (u) => {
+    try {
+      const parsed = new URL(String(u || ""));
+      // Use only pathname; query is mostly tracking/gibberish.
+      const path = decodeURIComponent(parsed.pathname || "");
+      return tokensFromText(path);
+    } catch {
+      return [];
+    }
+  };
+
+  const titleTokens = tokensFromText(title);
+  const domainTokens = tokensFromDomain(d);
+  const pathTokens = tokensFromUrlPath(url);
+  const all = [...domainTokens, ...titleTokens, ...pathTokens];
+  if (!all.length) return null;
+
+  const freq = new Map();
+  for (const tok of all) freq.set(tok, (freq.get(tok) || 0) + 1);
+
+  const score = (set, weight = 1) => {
+    let s = 0;
+    for (const k of set) s += (freq.get(k) || 0) * weight;
+    return s;
+  };
+
+  // Strong, high-signal keywords. We keep these tight to avoid false positives.
+  const KW = {
+    jobs: new Set(["job", "jobs", "career", "careers", "hiring", "recruit", "recruiting", "recruitment", "resume", "cv", "interview", "salary", "salaries", "compensation", "employer", "work", "vacancy", "vacancies"]),
+    travel: new Set(["travel", "trip", "trips", "flight", "flights", "airline", "airlines", "hotel", "hotels", "booking", "book", "bookings", "vacation", "vacations", "tour", "tours", "tourism", "itinerary", "car", "rental"]),
+    finance: new Set(["bank", "banking", "loan", "loans", "insurance", "invest", "investment", "trading", "broker", "brokerage", "mortgage", "credit", "card", "payments", "pay", "upi"]),
+    shopping: new Set(["shop", "shopping", "store", "stores", "cart", "checkout", "buy", "purchase", "deal", "deals", "discount", "coupon", "order"]),
+    realestate: new Set(["realestate", "property", "properties", "rent", "rental", "housing", "apartment", "apartments", "flat", "villa", "broker"]),
+    health: new Set(["health", "medical", "medicine", "doctor", "clinic", "hospital", "pharmacy", "pharma"]),
+    food: new Set(["food", "restaurant", "restaurants", "delivery", "menu", "order", "dining", "recipe", "recipes"]),
+    technology: new Set(["developer", "developers", "software", "technology", "tech", "computer", "computing", "cloud", "saas", "api", "github", "docs", "documentation", "ai"]),
+    education: new Set(["education", "course", "courses", "learn", "learning", "tutorial", "tutorials", "university", "college", "school", "reference"]),
+    news: new Set(["news", "breaking", "politics", "political", "government", "election", "journal", "journalism", "newspaper"]),
+    entertainment: new Set(["movie", "movies", "film", "music", "tv", "television", "streaming", "game", "games", "gaming", "sports"]),
+    social: new Set(["social", "community", "forum", "forums", "messaging", "chat", "dating"]),
+  };
+
+  const scored = [
+    { cat: "jobs", s: score(KW.jobs, 3) + score(new Set(domainTokens.filter((t) => KW.jobs.has(t))), 2) },
+    { cat: "travel", s: score(KW.travel, 3) + score(new Set(domainTokens.filter((t) => KW.travel.has(t))), 2) },
+    { cat: "finance", s: score(KW.finance, 3) },
+    { cat: "shopping", s: score(KW.shopping, 3) },
+    { cat: "realestate", s: score(KW.realestate, 3) },
+    { cat: "health", s: score(KW.health, 3) },
+    { cat: "food", s: score(KW.food, 3) },
+    { cat: "technology", s: score(KW.technology, 2) },
+    { cat: "education", s: score(KW.education, 2) },
+    { cat: "news", s: score(KW.news, 2) },
+    { cat: "entertainment", s: score(KW.entertainment, 2) },
+    { cat: "social", s: score(KW.social, 2) },
+  ].sort((a, b) => b.s - a.s);
+
+  const best = scored[0];
+  const second = scored[1] || { s: 0 };
+
+  // Conservative decision rule:
+  // - Require at least 2 strong hits (or repeated token hits) and a clear margin.
+  if (!best || best.s < 6) return null;
+  if (best.s - (second.s || 0) < 3) return null;
+  return best.cat;
 }
 
 async function geminiDomainRollupStrict(domain, title) {
@@ -234,15 +439,101 @@ Title: ${title || "unknown"}`;
   }
 }
 
-async function lookupDomainRollup(domain, title) {
+async function lookupDomainRollup(domain, title, url) {
   const dom = normalizeDomain(domain);
   const store = await domainCategoryStorePromise;
 
   const reg = store.get(dom);
   if (reg) return { category: reg, source: "registry", iab: null, iab_categories: null, iab_provider: null };
 
+  // Persistent enrichment cache: once a domain has vendor categories, reuse them across devices
+  // to avoid re-calling the web categorization API.
+  const enrich = await domainEnrichmentStorePromise;
+  const enrichHit = enrich.get(dom);
+  if (enrichHit && Array.isArray(enrichHit.iab_categories) && enrichHit.iab_categories.length) {
+    const meaningfulVendorCats = enrichHit.iab_categories.filter((c) => {
+      if (!c || typeof c !== "object") return false;
+      const name = String(c.name || "").trim().toLowerCase();
+      const conf = typeof c.confidence === "number" ? c.confidence : null;
+      if (!name || conf == null) return false;
+      if (conf <= 0) return false;
+      if (name === "uncategorized") return false;
+      return true;
+    });
+
+    // If the vendor categories are effectively empty (e.g. "Uncategorized" with 0 confidence),
+    // treat this like a vendor-empty response so we can fall back to title/url heuristics.
+    if (!meaningfulVendorCats.length) {
+      // Avoid burning quota by re-calling WhoisXML; we already know it can't categorize this domain.
+      categoryCache[dom] = {
+        category: "other",
+        cachedAt: Date.now(),
+        source: "whoisxml_no_categories",
+        iab: null,
+        iab_categories: null,
+        iab_provider: String(enrichHit.iab_provider || "whoisxml"),
+      };
+      const h = heuristicDomainRollup(dom, title, url);
+      if (h && VALID_CATEGORIES.includes(h) && h !== "other") {
+        categoryCache[dom] = { category: h, cachedAt: Date.now(), source: "heuristic_override", iab: null, iab_categories: null, iab_provider: null };
+        return { category: h, source: "heuristic_override", iab: null, iab_categories: null, iab_provider: null };
+      }
+      return { category: "other", source: "whoisxml_no_categories", iab: null, iab_categories: null, iab_provider: String(enrichHit.iab_provider || "whoisxml") };
+    }
+
+    const cat = String(enrichHit.category || "").trim().toLowerCase();
+    let safeCat = VALID_CATEGORIES.includes(cat) ? cat : "other";
+    let iabMapped = enrichHit.iab_mapped || null;
+
+    // If we previously cached vendor categories but mapped them to "other",
+    // re-run the mapping locally so improvements to mapping rules can "upgrade"
+    // domains without burning additional WhoisXML quota.
+    if (safeCat === "other" && String(enrichHit.iab_provider || "whoisxml") === "whoisxml") {
+      const remap = pickStrictWhoisMapping(meaningfulVendorCats, WHOIS_MIN_CONFIDENCE);
+      if (remap?.category && VALID_CATEGORIES.includes(remap.category) && remap.category !== "other") {
+        safeCat = remap.category;
+        iabMapped = remap.iab || null;
+        enrich.set(dom, {
+          ...enrichHit,
+          category: safeCat,
+          iab_mapped: iabMapped,
+        });
+        store.setVerified(dom, safeCat);
+      }
+    }
+    categoryCache[dom] = {
+      category: safeCat,
+      cachedAt: Date.now(),
+      source: "enrichment_store",
+      iab: iabMapped,
+      iab_categories: meaningfulVendorCats || null,
+      iab_provider: enrichHit.iab_provider || "whoisxml",
+    };
+    return {
+      category: safeCat,
+      source: "enrichment_store",
+      iab: iabMapped,
+      iab_categories: meaningfulVendorCats || null,
+      iab_provider: enrichHit.iab_provider || "whoisxml",
+    };
+  }
+
   if (categoryCache[dom] && Date.now() - categoryCache[dom].cachedAt < CACHE_TTL) {
     const hit = categoryCache[dom];
+    // Allow a strong title/url heuristic to override cached "other" results from vendor failures.
+    // This prevents popular sites from getting stuck as "other" just because the vendor returned
+    // empty/uncategorized on a previous attempt.
+    if (
+      hit.category === "other" &&
+      (title || url) &&
+      ["whoisxml_no_categories", "whoisxml_unmapped", "domain_unknown_strict", "enrichment_store"].includes(String(hit.source || ""))
+    ) {
+      const h = heuristicDomainRollup(dom, title, url);
+      if (h && VALID_CATEGORIES.includes(h) && h !== "other") {
+        categoryCache[dom] = { category: h, cachedAt: Date.now(), source: "heuristic_override", iab: hit.iab || null, iab_categories: hit.iab_categories || null, iab_provider: hit.iab_provider || null };
+        return { category: h, source: "heuristic_override", iab: hit.iab || null, iab_categories: hit.iab_categories || null, iab_provider: hit.iab_provider || null };
+      }
+    }
     return {
       category: hit.category,
       source: hit.source || "cache",
@@ -252,7 +543,7 @@ async function lookupDomainRollup(domain, title) {
     };
   }
 
-  const h = heuristicDomainRollup(dom, title);
+  const h = heuristicDomainRollup(dom, title, url);
   if (h && VALID_CATEGORIES.includes(h)) {
     categoryCache[dom] = { category: h, cachedAt: Date.now(), source: "heuristic", iab: null, iab_categories: null, iab_provider: null };
     return { category: h, source: "heuristic", iab: null, iab_categories: null, iab_provider: null };
@@ -273,11 +564,51 @@ async function lookupDomainRollup(domain, title) {
             name: String(c.name || "").trim(),
             confidence: typeof c.confidence === "number" ? c.confidence : null,
           }))
-          .filter((c) => c.name && c.confidence != null)
+          .filter((c) => {
+            if (!c.name || c.confidence == null) return false;
+            if (c.confidence <= 0) return false;
+            if (String(c.name).trim().toLowerCase() === "uncategorized") return false;
+            return true;
+          })
           .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
           .slice(0, 8);
 
         const mapped = pickStrictWhoisMapping(res.raw?.categories || [], WHOIS_MIN_CONFIDENCE);
+
+        // If the vendor returns no usable categories (or "Uncategorized" with 0 confidence),
+        // persist that fact so we don't keep burning quota retrying the same domain.
+        if (!cats.length) {
+          enrich.set(dom, {
+            category: "other",
+            iab_provider: "whoisxml",
+            iab_categories: null,
+            iab_mapped: null,
+            vendor_empty: true,
+          });
+          categoryCache[dom] = {
+            category: "other",
+            cachedAt: Date.now(),
+            source: "whoisxml_no_categories",
+            iab: null,
+            iab_categories: null,
+            iab_provider: "whoisxml",
+          };
+          return { category: "other", source: "whoisxml_no_categories", iab: null, iab_categories: null, iab_provider: "whoisxml" };
+        }
+
+        // Persist the vendor categories so we never need to call WhoisXML again for this domain.
+        // Also persist a strict rollup category if the mapping is confident enough.
+        if (cats.length) {
+          const mappedCat = mapped?.category && VALID_CATEGORIES.includes(mapped.category) ? mapped.category : "other";
+          enrich.set(dom, {
+            category: mappedCat,
+            iab_provider: "whoisxml",
+            iab_categories: cats,
+            iab_mapped: mapped?.iab || null,
+          });
+          if (mappedCat !== "other") store.setVerified(dom, mappedCat);
+        }
+
         if (mapped?.category && VALID_CATEGORIES.includes(mapped.category)) {
           store.setVerified(dom, mapped.category);
           categoryCache[dom] = {
@@ -775,7 +1106,7 @@ app.post("/api/company/auth/logout", companyCors(), (req, res) => {
 
 // ─── /api/categorize ──────────────────────────────────────────────────────────
 async function getCategory(domain, title) {
-  const rollup = await lookupDomainRollup(domain, title);
+  const rollup = await lookupDomainRollup(domain, title, null);
   return { category: rollup.category, source: rollup.source };
 }
 
@@ -807,7 +1138,7 @@ app.post("/api/classify-visit", async (req, res) => {
     return res.json({ ...hit.payload, cached: true });
   }
 
-  const rollup = await lookupDomainRollup(domain, title);
+  const rollup = await lookupDomainRollup(domain, title, url);
   const ev = pageEvidenceFromRequest(body);
   const visit = visitOverrideCategory(rollup.category, ev);
 
@@ -946,12 +1277,67 @@ function mergeVisitLogsById(prev = [], incoming = []) {
   return merged.length > cap ? merged.slice(-cap) : merged;
 }
 
+async function enrichSessionDaysWithIab(sessionDays) {
+  const days = sessionDays && typeof sessionDays === "object" ? sessionDays : {};
+  const domToSessions = new Map();
+
+  for (const day of Object.values(days)) {
+    for (const s of Object.values(day || {})) {
+      const dom = s?.domain ? normalizeDomain(s.domain) : null;
+      if (!dom) continue;
+      // Only enrich if missing vendor IAB + content taxonomy fields.
+      const needs =
+        !s.iab_provider ||
+        !Array.isArray(s.iab_categories) ||
+        !s.iab_categories.length ||
+        !s.iab_content_primary_id;
+      if (!needs) continue;
+      if (!domToSessions.has(dom)) domToSessions.set(dom, []);
+      domToSessions.get(dom).push(s);
+    }
+  }
+
+  const limit = Number(process.env.SYNC_IAB_ENRICH_LIMIT || 25);
+  const domains = [...domToSessions.keys()].slice(0, Math.max(0, limit));
+
+  for (const dom of domains) {
+    const rollup = await lookupDomainRollup(dom, "", null);
+    const vendorCats = Array.isArray(rollup.iab_categories) ? rollup.iab_categories : null;
+    if (!vendorCats || !vendorCats.length) continue;
+
+    const iabPrimary = vendorCats[0] || null;
+    const iabContent = await mapVendorCategoriesToIabContent(vendorCats);
+
+    for (const s of domToSessions.get(dom) || []) {
+      s.domain_rollup = rollup.category || s.domain_rollup || null;
+      s.iab_provider = rollup.iab_provider || "whoisxml";
+      s.iab_taxonomy = "whoisxml_website_categories";
+      s.iab_categories = vendorCats.slice(0, 8);
+      s.iab_primary_id = iabPrimary?.id ?? null;
+      s.iab_primary_name = iabPrimary?.name || null;
+      s.iab_primary_confidence = iabPrimary?.confidence ?? null;
+      // Preserve old iab_mapped if present; otherwise attach strict mapping debug if any.
+      if (s.iab_mapped == null && rollup.iab) s.iab_mapped = rollup.iab;
+
+      s.iab_content = iabContent || null;
+      s.iab_content_primary_id = iabContent?.primary?.id ?? null;
+      s.iab_content_primary_name = iabContent?.primary?.name ?? null;
+      s.iab_content_primary_confidence = iabContent?.primary?.confidence ?? null;
+      s.iab_content_match_method = iabContent?.primary?.match_method ?? null;
+    }
+  }
+
+  return sessionDays;
+}
+
 // ─── /api/sync ────────────────────────────────────────────────────────────────
-app.post("/api/sync", (req, res) => {
+app.post("/api/sync", async (req, res) => {
   const { userId, sessions, visitLog, totalEarnings, profile, collectorVersion } = req.body || {};
   if (!userId) return res.status(400).json({ error: "userId required" });
 
-  userSessions[userId] = mergeSessionDays(userSessions[userId], sessions || {});
+  const incoming = sessions || {};
+  await enrichSessionDaysWithIab(incoming);
+  userSessions[userId] = mergeSessionDays(userSessions[userId], incoming);
   userVisitLogs[userId] = mergeVisitLogsById(
     userVisitLogs[userId],
     Array.isArray(visitLog) ? visitLog : []
@@ -1573,8 +1959,9 @@ async function buildPackageRows(packageId, opts = {}) {
         if (!shoppingSessions.length) continue;
         const maxIntent = Math.max(...shoppingSessions.map(s => s.intent_score));
         const prices = normalizePricesFound(shoppingSessions.flatMap(s => s.pricesFound || [])).slice(0, 5);
-        const breadcrumbs = shoppingSessions.find(s => s.breadcrumbs?.length)?.breadcrumbs || [];
-        const qList = [...new Set(allSearchQueries)].slice(0, 10);
+        const breadcrumbsRaw = shoppingSessions.find(s => s.breadcrumbs?.length)?.breadcrumbs || [];
+        const breadcrumbs = sanitizeBreadcrumbs(breadcrumbsRaw, { maxItems: 8 });
+        const qList = sanitizeQueryList([...new Set(allSearchQueries)], { maxItems: 10 });
         const qInsights = inferQueryInsights(qList, "shopping");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -1605,7 +1992,7 @@ async function buildPackageRows(packageId, opts = {}) {
         const hourCounts = {};
         visitHours.forEach(h => { hourCounts[h] = (hourCounts[h] || 0) + 1; });
         const peakHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
-        const allQ = [...new Set(allSearchQueries)].slice(0, 20);
+        const allQ = sanitizeQueryList([...new Set(allSearchQueries)], { maxItems: 20 });
         const qInsights = inferQueryInsights(allQ, "cross_platform");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -1635,7 +2022,7 @@ async function buildPackageRows(packageId, opts = {}) {
         const finIntent = Object.values(sessions).flatMap(d =>
           Object.values(d).filter(s => s.category === "finance").map(s => s.intent_score || 3)
         );
-        const qList = finQueries.slice(0, 10);
+        const qList = sanitizeQueryList(finQueries, { maxItems: 10 });
         const qInsights = inferQueryInsights(qList, "finance");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -1660,7 +2047,7 @@ async function buildPackageRows(packageId, opts = {}) {
         const techDomains = allDomains.technology || [];
         const aiTools = techDomains.filter(d => ["claude.ai", "openai.com", "midjourney.com", "perplexity.ai"].includes(d));
         const devPlatforms = techDomains.filter(d => ["github.com", "stackoverflow.com", "vercel.com", "netlify.com", "leetcode.com"].includes(d));
-        const qList = allSearchQueries.slice(0, 10);
+        const qList = sanitizeQueryList(allSearchQueries, { maxItems: 10 });
         const qInsights = inferQueryInsights(qList, "tech");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -1688,7 +2075,7 @@ async function buildPackageRows(packageId, opts = {}) {
         const reQueries = allSearchQueries.filter(q =>
           /bhk|flat|apartment|villa|plot|rent|sale|property/i.test(q)
         );
-        const qList = reQueries.slice(0, 10);
+        const qList = sanitizeQueryList(reQueries, { maxItems: 10 });
         const qInsights = inferQueryInsights(qList, "property");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -1732,10 +2119,10 @@ async function buildPackageRows(packageId, opts = {}) {
         const hasPricesSeen = commerceSessions.some(s => Array.isArray(s.pricesFound) && s.pricesFound.length > 0);
         const hasCheckout = commerceSessions.some(s => Array.isArray(s.pageTypes) && s.pageTypes.includes("checkout"));
         const purchaseQueryRe = /\b(buy|price|deal|discount|coupon|sale|offer|best|under|cheap|review|vs|compare|specs?|shipping|delivery)\b/i;
-        const commerceQueries = [...new Set(commerceSessions.flatMap(s => Array.isArray(s.searchQueries) ? s.searchQueries : []))]
-          .map(q => String(q || "").trim())
-          .filter(q => q && purchaseQueryRe.test(q))
-          .slice(0, 12);
+        const commerceQueries = sanitizeQueryList(
+          [...new Set(commerceSessions.flatMap(s => Array.isArray(s.searchQueries) ? s.searchQueries : []))].filter((q) => purchaseQueryRe.test(String(q || ""))),
+          { maxItems: 12 }
+        );
         if (!commerceQueries.length && !hasPricesSeen && !hasCheckout) continue;
 
         const queryInsights = inferQueryInsights(commerceQueries, "late_night");
@@ -2103,7 +2490,7 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
         }
       }
       if (maxIntent !== null || Object.keys(intentByVertical).length) {
-        const qList = [...new Set(allSearchQueries)].slice(0, 10);
+        const qList = sanitizeQueryList([...new Set(allSearchQueries)], { maxItems: 10 });
         const qInsights = inferQueryInsights(qList, "intent");
         Object.assign(row, {
           max_intent_score: maxIntent,
@@ -2133,15 +2520,15 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
 
     if (catSet.has("content_signals")) {
       if (allPageTypes.length || allSearchQueries.length || allBreadcrumbs.length) {
-        const qList = [...new Set(allSearchQueries)].slice(0, 15);
+        const qList = sanitizeQueryList([...new Set(allSearchQueries)], { maxItems: 15 });
         const qInsights = inferQueryInsights(qList, "content");
         Object.assign(row, {
           page_types: [...new Set(allPageTypes)],
           search_queries: qList,
           ...qInsights,
           max_scroll_depth: maxScrollDepth,
-          breadcrumbs: [...new Set(allBreadcrumbs)].slice(0, 10),
-          keywords: [...new Set(allKeywords)].slice(0, 20),
+          breadcrumbs: sanitizeBreadcrumbs([...new Set(allBreadcrumbs)], { maxItems: 10 }),
+          keywords: sanitizeKeywordList([...new Set(allKeywords)], { maxItems: 20 }),
         });
         hasAnyData = true;
       }
@@ -2183,7 +2570,7 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
         const finQueries = allSearchQueries.filter(q =>
           /loan|mutual|sip|insurance|emi|invest|fund|bank|credit|demat|nifty|sensex/i.test(q)
         );
-        const qList = finQueries.slice(0, 10);
+        const qList = sanitizeQueryList(finQueries, { maxItems: 10 });
         const qInsights = inferQueryInsights(qList, "finance");
         const finIntents = Object.values(sessions).flatMap(d =>
           Object.values(d).filter(s => s.category === "finance").map(s => s.intent_score || 3)
