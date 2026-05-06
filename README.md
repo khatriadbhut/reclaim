@@ -92,6 +92,10 @@ If you use **Reclaim Business** (`/company`), set the `COMPANY_*` variables in `
 | `COMPANY_OAUTH_REDIRECT_URL` | `/company` login | Callback URL registered in Google Cloud |
 | `COMPANY_COOKIE_SECRET` | `/company` sessions | Signs HTTP-only session cookie |
 | `COMPANY_DASHBOARD_ORIGIN` | `/company` CORS | Dashboard origin (credentials) |
+| `WHOISXML_API_KEY` | Domain categorization (optional) | Enable WhoisXML website category lookup + quota tracking |
+| `WHOISXML_FREE_LIMIT` | Domain categorization (optional) | Free-tier limit used for quota reporting (default 100) |
+| `WHOISXML_MIN_CONFIDENCE` | Domain categorization (optional) | Minimum confidence to persist strict domain mappings |
+| `ALLOW_GEMINI_DOMAIN_LOOKUP` | Domain categorization (optional) | If `1`, allow Gemini tie-breaker lookups for unknown domains |
 
 Template: **`.env.example`** at repo root — copy to **`backend/.env`** (`cp .env.example backend/.env` from the root, or `cp ../.env.example .env` after `cd backend`).
 

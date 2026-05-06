@@ -260,6 +260,8 @@ A production-grade content script injected into every page via Manifest v3 `cont
 | POST | `/api/company/auth/logout` | Clear company session |
 | POST | `/api/categorize` | Legacy category-only |
 | POST | `/api/extract` | Structured Gemini extraction + cache |
+| POST | `/api/classify-visit` | Merge domain rollup + visit signals; attach vendor IAB + IAB Content Taxonomy mappings |
+| GET | `/api/domain-lookup/quota` | WhoisXML free-tier usage status (per API key) |
 | POST | `/api/sync` | Ingest sessions + earnings + profile from extension |
 | GET | `/api/profile/:userId` | Aggregated profile + segments |
 | GET | `/api/packages` | Public package catalog |
@@ -275,14 +277,25 @@ A production-grade content script injected into every page via Manifest v3 `cont
 
 **Storage:** in-memory maps for users, sessions, companies, purchases (resets on server restart).
 
-**Auto-assigned audience segments** (in `/api/profile`):
-- `high_intent_shopper` — shopping > 30 min
-- `finance_decision_maker` — finance > 15 min
-- `tech_early_adopter` — technology > 30 min
-- `property_seeker` — realestate > 10 min
-- `job_seeker` — jobs > 10 min
-- `travel_planner` — travel > 10 min
-- `night_owl_shopper` — isNightOwl + shopping > 10 min
+**Auto-assigned audience segments** (in `/api/profile` and on exports):
+
+- **Rollup segments** (internal 13-category buckets):
+  - `high_intent_shopper` — shopping > 30 min
+  - `finance_decision_maker` — finance > 15 min
+  - `tech_early_adopter` — technology > 30 min
+  - `property_seeker` — realestate > 10 min
+  - `job_seeker` — jobs > 10 min
+  - `travel_planner` — travel > 10 min
+  - `night_owl_shopper` — isNightOwl + shopping > 10 min
+
+- **IAB Content Taxonomy v3 (tier-1) time segments** (parallel enrichment layer):
+  - Computed from mapped IAB Content Taxonomy nodes attached per visit (via `/api/classify-visit`)
+  - Examples: `iab_shopping_core`, `iab_travel_core`, `iab_technology_core`, plus “dominant audience” flags based on share-of-time
+
+Exports include:
+- `audience_segments` (merged rollup + IAB)
+- `audience_segments_rollup` (rollup-only)
+- `audience_segments_iab` (IAB-only)
 
 ### 9. Dashboard (React + Vite) ✅
 - **`Landing.jsx`** — marketing landing at `/` (consumer + **Reclaim Business** paths; positioning line: consent-aware / anonymized packages / businesses)
