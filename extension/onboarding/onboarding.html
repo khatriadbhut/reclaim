@@ -18,7 +18,55 @@
       align-items: flex-start; justify-content: center;
       padding: 48px 16px calc(80px + env(safe-area-inset-bottom, 0px));
     }
-    .card { width: 100%; max-width: 480px; }
+    .onboard-shell {
+      width: 100%;
+      max-width: 520px;
+    }
+    .card { width: 100%; max-width: none; }
+    @media (min-width: 720px) {
+      html, body {
+        align-items: center;
+        padding: 40px 28px calc(72px + env(safe-area-inset-bottom, 0px));
+      }
+      .onboard-shell {
+        max-width: 640px;
+        background: #121212;
+        border: 1px solid #252525;
+        border-radius: 16px;
+        padding: 32px 36px 40px;
+        box-shadow: 0 24px 72px rgba(0, 0, 0, 0.45);
+      }
+      .logo { margin-bottom: 32px; font-size: 24px; }
+      h1 { font-size: 30px; }
+      .subtitle { font-size: 14px; margin-bottom: 26px; }
+      .step-meta { font-size: 12px; margin-bottom: 26px; }
+      .step-pip { height: 4px; border-radius: 3px; }
+      .consent-block { padding: 22px 22px; }
+      .highlight-block { font-size: 14px; padding: 18px 22px; }
+      .terms-card-lead { font-size: 15px; }
+    }
+    @media (min-width: 960px) {
+      .onboard-shell {
+        max-width: 880px;
+        padding: 44px 48px 52px;
+        border-radius: 18px;
+      }
+      h1 { font-size: 34px; }
+      .subtitle { font-size: 15px; max-width: 52ch; }
+      .step-indicator { gap: 8px; margin-bottom: 12px; }
+      .consent-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        align-items: start;
+      }
+      .consent-grid .consent-block { margin-bottom: 0; }
+      .step:not(#step-1) {
+        max-width: 520px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+    }
 
     /* ── Logo (unified with popup) ── */
     .logo {
@@ -245,6 +293,7 @@
   </style>
 </head>
 <body>
+<div class="onboard-shell">
 <div class="card" role="main">
   <!-- Logo — unified style -->
   <div class="logo">
@@ -265,6 +314,7 @@
   <div class="step" id="step-1" role="region" aria-labelledby="step-1-heading">
     <h1 id="step-1-heading">Before we<br><span class="accent">get started.</span></h1>
     <p class="subtitle">Here's exactly what Reclaim does — and what you're agreeing to.</p>
+    <div class="consent-grid">
     <div class="consent-block">
       <div class="consent-block-title">What we collect</div>
       <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Websites you visit — domain, time spent, and category<div class="dim">e.g. amazon.in · shopping · 4 min</div></div></div>
@@ -277,6 +327,7 @@
       <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Your data is anonymized and grouped into audience segments</div></div>
       <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Segments are sold to companies for market research and ad targeting</div></div>
       <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Your real name, email, and raw IP are never sold — buyers only get anonymized segments, not your identity<div class="dim">we store Google name &amp; email for your account and payouts only</div></div></div>
+    </div>
     </div>
     <div class="highlight-block">Meta, Google, and Instagram do all of the above — silently, without paying you a cent. Reclaim shows you exactly what's collected and gives you a cut of every sale.</div>
     <div class="terms-card">
@@ -378,6 +429,7 @@
     <div class="profile-summary" id="profileSummary"></div>
     <button type="button" class="btn btn-primary" id="doneBtn">Start Earning</button>
   </div>
+</div>
 </div>
 
 <!-- Location Denied Modal -->

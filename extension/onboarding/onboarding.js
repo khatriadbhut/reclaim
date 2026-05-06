@@ -7,7 +7,7 @@
 // Step 1: T&C  |  Step 2: Google Sign In  |  Step 3: Demographics  |  Step 4: Location  |  Step 5: Success
 
 const BACKEND_URL = "http://localhost:3000";
-/** Dashboard / marketing site origin — Terms & Privacy anchors live here. Set to production URL for store builds. */
+/** Dashboard origin — Terms & Privacy pages live at /terms and /privacy. Set to production URL for store builds. */
 const PUBLIC_SITE_ORIGIN = "http://localhost:5173";
 
 const STEP_LABELS = ["Consent", "Account", "Profile", "Location", "Done"];
@@ -484,8 +484,8 @@ document.getElementById("doneBtn").addEventListener("click", async () => {
   const terms = document.getElementById("legal-terms-link");
   const privacy = document.getElementById("legal-privacy-link");
   const base = `${PUBLIC_SITE_ORIGIN.replace(/\/$/, "")}`;
-  if (terms) terms.href = `${base}/#terms`;
-  if (privacy) privacy.href = `${base}/#privacy`;
+  if (terms) terms.href = `${base}/terms`;
+  if (privacy) privacy.href = `${base}/privacy`;
 })();
 
 if (isReturning) {

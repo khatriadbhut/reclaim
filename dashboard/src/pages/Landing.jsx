@@ -448,29 +448,6 @@ const CSS = `
   }
   .rclTrustV { font-size: 12px; color: #555; }
 
-  /* ── LEGAL (linked from extension onboarding) ── */
-  .rclLegal {
-    position: relative; z-index: 5;
-    max-width: 560px; margin: 0 auto;
-    padding: 28px 24px 8px;
-  }
-  .rclLegalBlock {
-    padding: 24px 0;
-    border-top: 1px solid rgba(255,255,255,0.06);
-    scroll-margin-top: 72px;
-  }
-  .rclLegalBlock:first-of-type { border-top: none; padding-top: 0; }
-  .rclLegalH {
-    font-family: 'Space Mono', monospace;
-    font-size: 11px; letter-spacing: 2px;
-    text-transform: uppercase; color: var(--g);
-    margin-bottom: 12px;
-  }
-  .rclLegalP {
-    font-size: 13px; color: #666; line-height: 1.65;
-    font-family: 'Space Mono', monospace;
-  }
-
   /* ── FOOTER ── */
   .rclFooter {
     position: relative; z-index: 5;
@@ -701,34 +678,14 @@ export default function Landing() {
         ))}
       </div>
 
-      {/* ── LEGAL (extension onboarding links here) ── */}
-      <section className="rclLegal" aria-label="Legal">
-        <div className="rclLegalBlock" id="terms">
-          <h2 className="rclLegalH">Terms of Service</h2>
-          <p className="rclLegalP">
-            Using Reclaim means you agree to the collection and use of browsing signals described in the extension
-            setup. Your name and email are used for your account only and are never sold. Packages sold to businesses
-            are anonymized segments — not your identity. Full legal terms will be published here before public launch.
-          </p>
-        </div>
-        <div className="rclLegalBlock" id="privacy">
-          <h2 className="rclLegalH">Privacy Policy</h2>
-          <p className="rclLegalP">
-            We collect domains, engagement, page signals, demographics you choose to provide, and city-level location,
-            as shown during onboarding. We do not sell your legal identity to buyers. For the full list of signals, see
-            the extension setup screen. Full policy text will be published here before public launch.
-          </p>
-        </div>
-      </section>
-
       {/* ── FOOTER ── */}
       <footer className="rclFooter">
         <div className="rclFooterLinks">
-          <a href="#terms">Terms of Service</a>
+          <a href="/terms">Terms of Service</a>
           <span style={{ color: "#333", margin: "0 10px" }} aria-hidden="true">
             ·
           </span>
-          <a href="#privacy">Privacy Policy</a>
+          <a href="/privacy">Privacy Policy</a>
         </div>
         <div className="rclFooterNote">
           consent-aware · privacy-safe · economics aligned with signal owners · businesses buy anonymized exports only
