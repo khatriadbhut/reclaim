@@ -3,6 +3,7 @@
 // Fix 2: tab close/reopen block removed — onboarding page handles its own navigation
 // Auth: chrome.identity.getAuthToken + /api/auth/google
 // Full structured extraction via /api/extract
+// Final packaged category via /api/classify-visit (strict merge: domain rollup + page signals)
 // Syncs to backend every 5 minutes
 
 const BACKEND_URL = "http://localhost:3000";
@@ -269,6 +270,15 @@ function getDomain(url) {
 
 function getTodayKey() { return new Date().toISOString().split("T")[0]; }
 
+function dominantPageType(session) {
+  const pts = Array.isArray(session?.pageTypes) ? session.pageTypes : [];
+  const rank = ["checkout", "travel_booking", "property_listing", "job_listing", "product", "category", "search", "article", "homepage", "other"];
+  for (const t of rank) {
+    if (pts.includes(t)) return t;
+  }
+  return pts.length ? pts[pts.length - 1] : "other";
+}
+
 function calculateEarnings(durationSeconds, extracted, session) {
   const baseRate = extracted.earnings_rate || FALLBACK_EARNINGS_RATE[extracted.category || "other"] || 0.005;
   let rate = baseRate;
@@ -279,7 +289,7 @@ function calculateEarnings(durationSeconds, extracted, session) {
     if (PREMIUM_BRANDS.includes((extracted.brand || "").toLowerCase())) rate += 0.003;
   }
   if (extracted.product_type) rate += 0.001;
-  const pageType = session.pageType || "other";
+  const pageType = dominantPageType(session);
   if (pageType === "checkout") rate += 0.01;
   else if (pageType === "product") rate += 0.005;
   else if (pageType === "search") rate += 0.002;
@@ -306,6 +316,60 @@ async function extractData(domain, title) {
   }
 }
 
+async function classifyVisitOnBackend({ url, title, domain, pageType, pageTypes, extracted, session }) {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/classify-visit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        title,
+        domain,
+        pageType: pageType || null,
+        pageTypes: Array.isArray(pageTypes) ? pageTypes : [],
+        hasPrices: Array.isArray(session?.pricesFound) && session.pricesFound.length > 0,
+        pricesCount: Array.isArray(session?.pricesFound) ? session.pricesFound.length : 0,
+        modelCategory: extracted?.category || null,
+      }),
+    });
+    if (!res.ok) throw new Error();
+    return await res.json();
+  } catch {
+    return { category: extracted?.category || "other", earnings_rate: FALLBACK_EARNINGS_RATE[extracted?.category || "other"] || 0.005 };
+  }
+}
+
+async function refreshVisitClassification(url, title, domain, session, extracted, latestPageType) {
+  const classified = await classifyVisitOnBackend({
+    url,
+    title,
+    domain,
+    pageType: latestPageType || null,
+    pageTypes: session.pageTypes,
+    extracted,
+    session,
+  });
+
+  session.packaged_category = classified.category;
+  session.category = classified.category;
+  session.category_merge = classified.merge || null;
+  session.domain_rollup = classified.domain_rollup ?? classified.domainRollup ?? null;
+  session.iab_provider = classified.iab_provider || null;
+  session.iab_taxonomy = classified.iab_taxonomy || null;
+  session.iab_categories = Array.isArray(classified.iab_categories) ? classified.iab_categories.slice(0, 8) : null;
+  session.iab_primary_id = classified.iab_primary_id ?? null;
+  session.iab_primary_name = classified.iab_primary_name ?? null;
+  session.iab_primary_confidence = classified.iab_primary_confidence ?? null;
+  session.iab_mapped = classified.iab_mapped || null;
+  session.iab_content = classified.iab_content || null;
+  session.iab_content_primary_id = classified.iab_content_primary_id ?? null;
+  session.iab_content_primary_name = classified.iab_content_primary_name ?? null;
+  session.iab_content_primary_confidence = classified.iab_content_primary_confidence ?? null;
+  session.iab_content_match_method = classified.iab_content_match_method ?? null;
+
+  return classified;
+}
+
 async function saveSession(url, title, durationSeconds, contentData = {}) {
   if (!url || durationSeconds < 2) return;
   if (url.startsWith("chrome://") || url.startsWith("chrome-extension://")) return;
@@ -313,7 +377,6 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
   if (!domain) return;
 
   const extracted = await extractData(domain, title);
-  const category = extracted.category || "other";
   const todayKey = getTodayKey();
   const result = await chrome.storage.local.get(["sessions", "totalEarnings"]);
   const sessions = result.sessions || {};
@@ -322,7 +385,7 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
   if (!sessions[todayKey]) sessions[todayKey] = {};
   if (!sessions[todayKey][domain]) {
     sessions[todayKey][domain] = {
-      domain, category, totalSeconds: 0, visits: 0, earned: 0,
+      domain, category: "other", packaged_category: "other", totalSeconds: 0, visits: 0, earned: 0,
       brand: extracted.brand || null, product: extracted.product || null,
       product_type: extracted.product_type || null, price_range: extracted.price_range || null,
       intent_score: extracted.intent_score || 3, keywords: [],
@@ -331,6 +394,12 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
       property_type: extracted.property_type || null,
       searchQueries: [], maxScrollDepth: 0, pricesFound: [],
       breadcrumbs: [], pageTypes: [], deviceType: null, timeOfDay: null, visitHours: [],
+      iab_provider: null, iab_taxonomy: null, iab_categories: null,
+      iab_primary_id: null, iab_primary_name: null, iab_primary_confidence: null,
+      iab_mapped: null,
+      iab_content: null,
+      iab_content_primary_id: null, iab_content_primary_name: null,
+      iab_content_primary_confidence: null, iab_content_match_method: null,
     };
   }
 
@@ -369,13 +438,21 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
   if (contentData.timeOfDay) session.timeOfDay = contentData.timeOfDay;
   if (typeof contentData.visitHour === "number" && !session.visitHours.includes(contentData.visitHour)) session.visitHours.push(contentData.visitHour);
 
+  const classified = await refreshVisitClassification(url, title, domain, session, extracted, contentData.pageType);
+
   let crossSiteBonus = 0;
   if (session.brand) {
     const sameBrandDomains = Object.values(sessions[todayKey]).filter(s => s.brand && s.brand.toLowerCase() === session.brand.toLowerCase() && s.domain !== domain);
     if (sameBrandDomains.length >= 2) crossSiteBonus = 0.005;
   }
 
-  const earned = calculateEarnings(durationSeconds, extracted, session) + (crossSiteBonus / 3600) * durationSeconds;
+  const extractedForEarnings = {
+    ...extracted,
+    category: classified.category,
+    earnings_rate: classified.earnings_rate || FALLBACK_EARNINGS_RATE[classified.category] || extracted.earnings_rate,
+  };
+
+  const earned = calculateEarnings(durationSeconds, extractedForEarnings, session) + (crossSiteBonus / 3600) * durationSeconds;
   session.earned += earned;
   await chrome.storage.local.set({ sessions, totalEarnings: totalEarnings + earned, lastUpdated: Date.now() });
 }

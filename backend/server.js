@@ -3,6 +3,14 @@ import express from "express";
 import cors from "cors";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import crypto from "crypto";
+import path from "path";
+import { fileURLToPath } from "url";
+import { createDomainCategoryStore, normDomain as normalizeDomainKey } from "./domainCategoryStore.js";
+import { createApiUsageStore } from "./apiUsageStore.js";
+import { pickStrictWhoisMapping, whoisXmlLookup } from "./whoisXmlCategorizer.js";
+import { loadIabContentTaxonomyV3 } from "./iabContentTaxonomy.js";
+import { mapVendorLabelToIabContentId } from "./iabContentMap.js";
+import { audienceSegmentExportFields, computeRollupAudienceSegments } from "./audienceSegments.js";
 
 // Always load env from backend/.env (works even if process cwd is repo root)
 dotenv.config({ path: new URL("./.env", import.meta.url) });
@@ -11,6 +19,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const iabTaxonomyPromise = loadIabContentTaxonomyV3(path.join(__dirname, "data", "iab-content-taxonomy-3.0.tsv"));
 
 // CORS:
 // - Public API (extension) can stay wide-open.
@@ -74,43 +87,285 @@ const VALID_CATEGORIES = [
   "realestate", "jobs", "other"
 ];
 
-const KNOWN_DOMAINS = {
-  "amazon.in": "shopping", "amazon.com": "shopping", "flipkart.com": "shopping",
-  "myntra.com": "shopping", "meesho.com": "shopping", "ajio.com": "shopping",
-  "nykaa.com": "shopping", "snapdeal.com": "shopping", "ebay.com": "shopping",
-  "etsy.com": "shopping", "walmart.com": "shopping",
-  "instagram.com": "social", "facebook.com": "social", "twitter.com": "social",
-  "x.com": "social", "linkedin.com": "social", "reddit.com": "social",
-  "pinterest.com": "social", "snapchat.com": "social", "threads.net": "social",
-  "discord.com": "social", "telegram.org": "social",
-  "youtube.com": "entertainment", "netflix.com": "entertainment", "spotify.com": "entertainment",
-  "hotstar.com": "entertainment", "primevideo.com": "entertainment", "twitch.tv": "entertainment",
-  "zee5.com": "entertainment", "sonyliv.com": "entertainment",
-  "timesofindia.com": "news", "hindustantimes.com": "news", "ndtv.com": "news",
-  "thehindu.com": "news", "bbc.com": "news", "cnn.com": "news",
-  "reuters.com": "news", "bloomberg.com": "news", "techcrunch.com": "news", "theverge.com": "news",
-  "zerodha.com": "finance", "groww.in": "finance", "upstox.com": "finance",
-  "moneycontrol.com": "finance", "paytm.com": "finance", "phonepe.com": "finance",
-  "economictimes.indiatimes.com": "finance", "investing.com": "finance",
-  "wikipedia.org": "education", "coursera.org": "education", "udemy.com": "education",
-  "khanacademy.org": "education", "stackoverflow.com": "education", "leetcode.com": "education",
-  "nptel.ac.in": "education", "unacademy.com": "education",
-  "google.com": "technology", "microsoft.com": "technology", "apple.com": "technology",
-  "claude.ai": "technology", "openai.com": "technology", "notion.so": "technology",
-  "figma.com": "technology", "canva.com": "technology", "github.com": "technology",
-  "vercel.com": "technology", "netlify.com": "technology",
-  "practo.com": "health", "1mg.com": "health", "webmd.com": "health",
-  "healthline.com": "health", "pharmeasy.in": "health",
-  "makemytrip.com": "travel", "goibibo.com": "travel", "airbnb.com": "travel",
-  "booking.com": "travel", "irctc.co.in": "travel", "uber.com": "travel",
-  "cleartrip.com": "travel", "skyscanner.com": "travel",
-  "swiggy.com": "food", "zomato.com": "food", "dunzo.com": "food",
-  "blinkit.com": "food", "zepto.com": "food",
-  "magicbricks.com": "realestate", "99acres.com": "realestate",
-  "housing.com": "realestate", "nobroker.in": "realestate",
-  "naukri.com": "jobs", "internshala.com": "jobs", "wellfound.com": "jobs",
-  "indeed.com": "jobs", "shine.com": "jobs"
-};
+const domainCategoryStorePromise = createDomainCategoryStore({
+  storePath: path.join(__dirname, "domain-categories.json"),
+  legacyLearnedPath: path.join(__dirname, "learned-domain-categories.json"),
+});
+
+const whoisUsageStorePromise = createApiUsageStore({
+  storePath: path.join(__dirname, "whoisxml-usage.json"),
+  defaultLimit: Number(process.env.WHOISXML_FREE_LIMIT || 100),
+});
+
+const WHOIS_MIN_CONFIDENCE = Number(process.env.WHOISXML_MIN_CONFIDENCE || 0.9);
+const GEMINI_DOMAIN_MIN_CONFIDENCE = Number(process.env.GEMINI_DOMAIN_MIN_CONFIDENCE || 0.86);
+const ALLOW_GEMINI_DOMAIN_LOOKUP = String(process.env.ALLOW_GEMINI_DOMAIN_LOOKUP || "0") === "1";
+const CLASSIFY_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+const classifyCache = {};
+
+function normalizeDomain(domain) {
+  return normalizeDomainKey(domain);
+}
+
+function heuristicDomainRollup(domain, title) {
+  const d = normalizeDomain(domain);
+  const t = String(title || "").toLowerCase();
+  if (!d) return null;
+  if (/\b(pay|payments|upi|bank|loan|insurance|sip|mutual|demat|broker|trading)\b/.test(d) || /\b(emi|loan|sip|mutual fund|insurance)\b/.test(t)) return "finance";
+  if (/\b(job|jobs|career|careers|hiring|recruit)\b/.test(d) || /\b(apply now|we are hiring)\b/.test(t)) return "jobs";
+  if (/\b(hotel|flight|booking|airline|trip|travel)\b/.test(d) || /\b(book flight|book hotel)\b/.test(t)) return "travel";
+  if (/\b(pharma|health|clinic|doctor|medicine)\b/.test(d)) return "health";
+  if (/\b(food|delivery|restaurant)\b/.test(d)) return "food";
+  if (/\b(realestate|property|properties|flat|apartment|villa)\b/.test(d) || /\b(bhk)\b/.test(t)) return "realestate";
+  if (/\b(shop|store|cart|checkout|market)\b/.test(d)) return "shopping";
+  return null;
+}
+
+async function geminiDomainRollupStrict(domain, title) {
+  const dom = normalizeDomain(domain);
+  if (!dom) return { category: "other", source: "gemini_skip" };
+  const prompt = `You are classifying a website DOMAIN into exactly ONE coarse vertical for ad-tech audience packaging.
+
+Valid categories: ${VALID_CATEGORIES.join(", ")}
+
+Rules:
+- Return ONLY valid JSON: {"category":"<word>","confidence":0.0}
+- confidence is your calibrated probability this domain's primary purpose matches category (0..1)
+- If unsure, use category "other" with confidence <= 0.5
+
+Domain: ${dom}
+Title: ${title || "unknown"}`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(raw);
+    const cat = String(parsed.category || "").trim().toLowerCase();
+    const conf = typeof parsed.confidence === "number" ? parsed.confidence : null;
+    if (!VALID_CATEGORIES.includes(cat) || conf == null) return { category: "other", source: "gemini_reject" };
+    if (conf < GEMINI_DOMAIN_MIN_CONFIDENCE || cat === "other") return { category: "other", source: "gemini_low_confidence" };
+    return { category: cat, source: "gemini", confidence: conf };
+  } catch {
+    return { category: "other", source: "gemini_error" };
+  }
+}
+
+async function lookupDomainRollup(domain, title) {
+  const dom = normalizeDomain(domain);
+  const store = await domainCategoryStorePromise;
+
+  const reg = store.get(dom);
+  if (reg) return { category: reg, source: "registry", iab: null, iab_categories: null, iab_provider: null };
+
+  if (categoryCache[dom] && Date.now() - categoryCache[dom].cachedAt < CACHE_TTL) {
+    const hit = categoryCache[dom];
+    return {
+      category: hit.category,
+      source: hit.source || "cache",
+      iab: hit.iab || null,
+      iab_categories: hit.iab_categories || null,
+      iab_provider: hit.iab_provider || null,
+    };
+  }
+
+  const h = heuristicDomainRollup(dom, title);
+  if (h && VALID_CATEGORIES.includes(h)) {
+    categoryCache[dom] = { category: h, cachedAt: Date.now(), source: "heuristic", iab: null, iab_categories: null, iab_provider: null };
+    return { category: h, source: "heuristic", iab: null, iab_categories: null, iab_provider: null };
+  }
+
+  const whoisKey = process.env.WHOISXML_API_KEY;
+  const whoisLimit = Number(process.env.WHOISXML_FREE_LIMIT || 100);
+  if (whoisKey) {
+    const usage = await whoisUsageStorePromise;
+    if (usage.canUse(whoisKey, whoisLimit)) {
+      const res = await whoisXmlLookup({ apiKey: whoisKey, urlOrDomain: dom });
+      if (res.ok) {
+        usage.increment(whoisKey, whoisLimit);
+        const cats = (res.raw?.categories || [])
+          .filter((c) => c && typeof c === "object")
+          .map((c) => ({
+            id: c.id,
+            name: String(c.name || "").trim(),
+            confidence: typeof c.confidence === "number" ? c.confidence : null,
+          }))
+          .filter((c) => c.name && c.confidence != null)
+          .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))
+          .slice(0, 8);
+
+        const mapped = pickStrictWhoisMapping(res.raw?.categories || [], WHOIS_MIN_CONFIDENCE);
+        if (mapped?.category && VALID_CATEGORIES.includes(mapped.category)) {
+          store.setVerified(dom, mapped.category);
+          categoryCache[dom] = {
+            category: mapped.category,
+            cachedAt: Date.now(),
+            source: "whoisxml",
+            iab: mapped.iab || null,
+            iab_categories: cats.length ? cats : null,
+            iab_provider: "whoisxml",
+          };
+          return {
+            category: mapped.category,
+            source: "whoisxml",
+            iab: mapped.iab || null,
+            iab_categories: cats.length ? cats : null,
+            iab_provider: "whoisxml",
+          };
+        }
+
+        categoryCache[dom] = {
+          category: "other",
+          cachedAt: Date.now(),
+          source: "whoisxml_unmapped",
+          iab: null,
+          iab_categories: cats.length ? cats : null,
+          iab_provider: "whoisxml",
+        };
+        return { category: "other", source: "whoisxml_unmapped", iab: null, iab_categories: cats.length ? cats : null, iab_provider: "whoisxml" };
+      }
+    }
+  }
+
+  if (!ALLOW_GEMINI_DOMAIN_LOOKUP) {
+    categoryCache[dom] = { category: "other", cachedAt: Date.now(), source: "domain_unknown_strict", iab: null, iab_categories: null, iab_provider: null };
+    return { category: "other", source: "domain_unknown_strict", iab: null, iab_categories: null, iab_provider: null };
+  }
+
+  const g = await geminiDomainRollupStrict(dom, title);
+  categoryCache[dom] = { category: g.category, cachedAt: Date.now(), source: g.source, iab: null, iab_categories: null, iab_provider: null };
+  return { category: g.category, source: g.source, iab: null, iab_categories: null, iab_provider: null };
+}
+
+function pageEvidenceFromRequest(body) {
+  const url = String(body?.url || "");
+  let pathname = "";
+  try {
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    pathname = "";
+  }
+  const pageTypes = Array.isArray(body?.pageTypes) ? body.pageTypes.map((x) => String(x)) : [];
+  const latest = body?.pageType ? String(body.pageType) : "";
+  const set = new Set([...pageTypes, latest].filter(Boolean));
+
+  const hasPrices = body?.hasPrices === true;
+  const pricesCount = typeof body?.pricesCount === "number" ? body.pricesCount : 0;
+
+  const pathLooksCheckout = /\/(cart|checkout|bag|basket|payment|pay|order)\b/i.test(pathname);
+  const pathLooksProduct = /\/(p|product|products|item|dp)\b/i.test(pathname) || /\/dp\//i.test(pathname);
+
+  return {
+    latest,
+    set,
+    hasPrices: hasPrices || pricesCount > 0,
+    pathLooksCheckout,
+    pathLooksProduct,
+  };
+}
+
+function visitOverrideCategory(domainRollup, ev) {
+  const base = domainRollup || "other";
+
+  if (ev.set.has("travel_booking")) return { category: "travel", reason: "page_travel_booking", confidence: 0.95 };
+
+  if (ev.latest === "job_listing" && ev.set.has("job_listing")) {
+    return { category: "jobs", reason: "page_job_listing", confidence: 0.9 };
+  }
+
+  if (ev.latest === "property_listing" && ev.set.has("property_listing")) {
+    return { category: "realestate", reason: "page_property_listing", confidence: 0.9 };
+  }
+
+  const strongCommerce =
+    ev.set.has("checkout") ||
+    ev.pathLooksCheckout ||
+    (ev.set.has("product") && (ev.hasPrices || ev.pathLooksProduct)) ||
+    (ev.set.has("category") && ev.hasPrices);
+
+  if (strongCommerce) {
+    if (["travel", "jobs", "realestate"].includes(base)) {
+      return { category: base, reason: "commerce_signal_ignored_conflicting_vertical", confidence: 0.55 };
+    }
+    return { category: "shopping", reason: "commerce_signals", confidence: 0.9 };
+  }
+
+  return null;
+}
+
+function mergeDomainAndVisit(domainBundle, visitBundle) {
+  const dCat = domainBundle.category;
+  const v = visitBundle;
+  if (!v) return { category: dCat, decision: "domain_only" };
+
+  if (!v.category || v.category === dCat) return { category: dCat, decision: "domain_agrees_visit" };
+
+  // Prefer high-confidence visit vertical signals over domain rollup when they disagree.
+  if ((v.confidence || 0) >= 0.9) return { category: v.category, decision: "visit_override" };
+  return { category: dCat, decision: "domain_preferred_low_visit_confidence" };
+}
+
+function classifyCacheKey(payload) {
+  const dom = normalizeDomain(payload.domain);
+  const url = String(payload.url || "");
+  const pts = Array.isArray(payload.pageTypes) ? [...payload.pageTypes].sort().join(",") : "";
+  const latest = String(payload.pageType || "");
+  const hq = payload.hasPrices ? "1" : "0";
+  const pc = String(payload.pricesCount ?? "");
+  const mc = String(payload.modelCategory || "");
+  return crypto.createHash("sha256").update(`${dom}|${url}|${latest}|${pts}|${hq}|${pc}|${mc}`).digest("hex");
+}
+
+async function mapVendorCategoriesToIabContent(vendorCategories) {
+  const taxonomy = await iabTaxonomyPromise;
+  const list = Array.isArray(vendorCategories) ? vendorCategories : [];
+  const mapped = [];
+
+  for (const c of list) {
+    if (!c || typeof c !== "object") continue;
+    const vendorName = String(c.name || "").trim();
+    const vendorId = c.id ?? null;
+    const vendorConfidence = typeof c.confidence === "number" ? c.confidence : null;
+    if (!vendorName || vendorConfidence == null) continue;
+
+    const exact = taxonomy.lookupExactName(vendorName);
+    if (exact) {
+      mapped.push({
+        vendor: { id: vendorId, name: vendorName, confidence: vendorConfidence },
+        iab_content: { id: exact.id, name: exact.name, tier1: exact.tier1, tier2: exact.tier2 },
+        match: { method: "exact_name", confidence: Math.min(0.95, vendorConfidence) },
+      });
+      continue;
+    }
+
+    const inferred = mapVendorLabelToIabContentId(taxonomy.normalizeLabel(vendorName));
+    if (!inferred) continue;
+    const node = taxonomy.byId.get(inferred.id);
+    if (!node) continue;
+    const mapConf = inferred.confidence;
+    mapped.push({
+      vendor: { id: vendorId, name: vendorName, confidence: vendorConfidence },
+      iab_content: { id: node.id, name: node.name, tier1: node.tier1, tier2: node.tier2 },
+      match: { method: inferred.method, confidence: Math.min(vendorConfidence, mapConf) },
+    });
+  }
+
+  mapped.sort((a, b) => (b.match.confidence || 0) - (a.match.confidence || 0));
+  const primary = mapped.length ? mapped[0] : null;
+
+  return {
+    taxonomy_version: `IAB Tech Lab Content Taxonomy v${taxonomy.version}`,
+    mappings: mapped.slice(0, 12),
+    primary: primary
+      ? {
+          id: primary.iab_content.id,
+          name: primary.iab_content.name,
+          confidence: primary.match.confidence,
+          match_method: primary.match.method,
+          vendor: primary.vendor,
+        }
+      : null,
+  };
+}
 
 const EARNINGS_RATE = {
   shopping: 0.05, finance: 0.06, health: 0.05, travel: 0.04,
@@ -436,24 +691,8 @@ app.post("/api/company/auth/logout", companyCors(), (req, res) => {
 
 // ─── /api/categorize ──────────────────────────────────────────────────────────
 async function getCategory(domain, title) {
-  if (KNOWN_DOMAINS[domain]) return { category: KNOWN_DOMAINS[domain], source: "known" };
-  if (categoryCache[domain] && Date.now() - categoryCache[domain].cachedAt < CACHE_TTL) {
-    return { category: categoryCache[domain].category, source: "cache" };
-  }
-  try {
-    const prompt = `Categorize this website into exactly ONE of: ${VALID_CATEGORIES.join(", ")}\nDomain: ${domain}\nTitle: ${title || "unknown"}\nReply with ONLY the single category word.`;
-    const result = await model.generateContent(prompt);
-    const raw = result.response.text().trim().toLowerCase();
-    const cleaned = raw.replace(/[^a-z]/g, " ").trim();
-    const first = cleaned.split(/\s+/)[0] || "";
-    const found = VALID_CATEGORIES.find((c) => cleaned.includes(c)) || "";
-    const category = VALID_CATEGORIES.includes(first) ? first : (found || "other");
-    categoryCache[domain] = { category, cachedAt: Date.now() };
-    return { category, source: "gemini" };
-  } catch (err) {
-    console.error("Gemini categorize error:", err.message);
-    return { category: "other", source: "fallback" };
-  }
+  const rollup = await lookupDomainRollup(domain, title);
+  return { category: rollup.category, source: rollup.source };
 }
 
 app.post("/api/categorize", async (req, res) => {
@@ -461,6 +700,81 @@ app.post("/api/categorize", async (req, res) => {
   if (!domain) return res.status(400).json({ error: "domain is required" });
   const result = await getCategory(domain, title);
   return res.json(result);
+});
+
+app.get("/api/domain-lookup/quota", async (_req, res) => {
+  const whoisKey = process.env.WHOISXML_API_KEY;
+  const whoisLimit = Number(process.env.WHOISXML_FREE_LIMIT || 100);
+  if (!whoisKey) return res.json({ enabled: false });
+  const usage = await whoisUsageStorePromise;
+  return res.json({ enabled: true, provider: "whoisxml", ...usage.status(whoisKey, whoisLimit) });
+});
+
+app.post("/api/classify-visit", async (req, res) => {
+  const body = req.body || {};
+  const domain = body.domain;
+  const title = body.title || "";
+  const url = body.url || "";
+  if (!domain) return res.status(400).json({ error: "domain required" });
+
+  const ck = classifyCacheKey(body);
+  const hit = classifyCache[ck];
+  if (hit && Date.now() - hit.cachedAt < CLASSIFY_CACHE_TTL_MS) {
+    return res.json({ ...hit.payload, cached: true });
+  }
+
+  const rollup = await lookupDomainRollup(domain, title);
+  const ev = pageEvidenceFromRequest(body);
+  const visit = visitOverrideCategory(rollup.category, ev);
+
+  const modelCategory = String(body.modelCategory || "").trim().toLowerCase();
+  let merged = mergeDomainAndVisit(
+    { category: rollup.category },
+    visit ? { category: visit.category, confidence: visit.confidence } : null
+  );
+
+  // Optional tie-breaker: only trust page-title model category if it matches domain or visit vertical.
+  if (
+    modelCategory &&
+    VALID_CATEGORIES.includes(modelCategory) &&
+    modelCategory !== "other" &&
+    (modelCategory === rollup.category || (visit && modelCategory === visit.category))
+  ) {
+    merged = { category: modelCategory, decision: "model_agreement" };
+  }
+
+  const category = merged.category;
+  const iabCats = Array.isArray(rollup.iab_categories) ? rollup.iab_categories : null;
+  const iabPrimaryFromList = iabCats?.length ? iabCats[0] : null;
+  const iabPrimary = iabPrimaryFromList || (rollup.iab ? { id: rollup.iab.id, name: rollup.iab.name, confidence: null } : null);
+  const iabContent = await mapVendorCategoriesToIabContent(iabCats || []);
+
+  const payload = {
+    category,
+    earnings_rate: EARNINGS_RATE[category] || EARNINGS_RATE.other,
+    domain_rollup: rollup.category,
+    domain_source: rollup.source,
+    iab_provider: rollup.iab_provider || (iabCats ? "whoisxml" : null),
+    iab_taxonomy: "whoisxml_website_categories",
+    iab_categories: iabCats,
+    iab_primary_id: iabPrimary?.id ?? null,
+    iab_primary_name: iabPrimary?.name || null,
+    iab_primary_confidence: iabPrimary?.confidence ?? null,
+    // Back-compat / debugging: mapped IAB node used for strict rollup mapping (may be null)
+    iab_mapped: rollup.iab || null,
+    // IAB Tech Lab Content Taxonomy (mapped from vendor website categories)
+    iab_content: iabContent,
+    iab_content_primary_id: iabContent.primary?.id ?? null,
+    iab_content_primary_name: iabContent.primary?.name ?? null,
+    iab_content_primary_confidence: iabContent.primary?.confidence ?? null,
+    iab_content_match_method: iabContent.primary?.match_method ?? null,
+    visit_override: visit,
+    merge: merged,
+    model_category: modelCategory || null,
+  };
+
+  classifyCache[ck] = { cachedAt: Date.now(), payload };
+  return res.json({ ...payload, cached: false });
 });
 
 // ─── /api/extract ─────────────────────────────────────────────────────────────
@@ -471,7 +785,8 @@ app.post("/api/extract", async (req, res) => {
   const key = cacheKey(domain, title);
   if (extractCache[key]) return res.json({ ...extractCache[key], cached: true });
 
-  const knownCategory = KNOWN_DOMAINS[domain];
+  const store = await domainCategoryStorePromise;
+  const domainRollup = store.get(domain);
 
   try {
     const prompt = `You are a data extraction engine for an AdTech platform. Extract structured data from this web page visit.
@@ -501,7 +816,7 @@ Return ONLY valid JSON, no explanation, no markdown.`;
     const raw = result.response.text().trim().replace(/```json|```/g, "").trim();
     const extracted = JSON.parse(raw);
 
-    if (knownCategory) extracted.category = knownCategory;
+    extracted.domain_rollup = domainRollup || null;
     extracted.earnings_rate = EARNINGS_RATE[extracted.category] || EARNINGS_RATE.other;
 
     extractCache[key] = extracted;
@@ -509,12 +824,13 @@ Return ONLY valid JSON, no explanation, no markdown.`;
   } catch (err) {
     console.error("Extract error:", err.message);
     const fallback = {
-      category: knownCategory || "other",
+      category: "other",
+      domain_rollup: domainRollup || null,
       brand: null, product: null, product_type: null,
       price_range: null, intent_score: 3, keywords: [],
       location: null, job_title: null, travel_route: null,
       property_type: null, search_type: null,
-      earnings_rate: EARNINGS_RATE[knownCategory || "other"],
+      earnings_rate: EARNINGS_RATE.other,
       cached: false
     };
     extractCache[key] = fallback;
@@ -572,7 +888,7 @@ app.post("/api/sync", (req, res) => {
 });
 
 // ─── /api/profile/:userId ─────────────────────────────────────────────────────
-app.get("/api/profile/:userId", (req, res) => {
+app.get("/api/profile/:userId", async (req, res) => {
   const { userId } = req.params;
   const sessions = userSessions[userId] || {};
   const profile = userProfiles[userId] || {};
@@ -615,14 +931,18 @@ app.get("/api/profile/:userId", (req, res) => {
   const peakHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
   const isNightOwl = visitHours.some(h => h >= 22 || h <= 2);
 
-  const segments = [];
-  if ((categories.shopping?.seconds || 0) > 1800) segments.push("high_intent_shopper");
-  if ((categories.finance?.seconds || 0) > 900) segments.push("finance_decision_maker");
-  if ((categories.technology?.seconds || 0) > 1800) segments.push("tech_early_adopter");
-  if ((categories.realestate?.seconds || 0) > 600) segments.push("property_seeker");
-  if ((categories.jobs?.seconds || 0) > 600) segments.push("job_seeker");
-  if ((categories.travel?.seconds || 0) > 600) segments.push("travel_planner");
-  if (isNightOwl && (categories.shopping?.seconds || 0) > 600) segments.push("night_owl_shopper");
+  const totalCatSeconds = Object.fromEntries(
+    Object.entries(categories).map(([k, v]) => [k, v.seconds])
+  );
+  const taxonomy = await iabTaxonomyPromise;
+  const segExport = audienceSegmentExportFields(
+    sessions,
+    totalCatSeconds,
+    totalSeconds,
+    visitHours,
+    taxonomy.byId
+  );
+  const segments = segExport?.audience_segments ?? computeRollupAudienceSegments(totalCatSeconds, isNightOwl);
 
   return res.json({
     userId, profile,
@@ -685,7 +1005,7 @@ function getPackagesPayload() {
       tier: 1,
       name: "High Intent Shoppers",
       tagline: "Users actively comparing products across sites — ready to buy",
-      description: "Consent-based behavioral data from users showing strong cross-site purchase intent. Powered by intent scores, search queries, prices viewed, breadcrumb category paths, and scroll depth on product pages.",
+      description: "Consent-based behavioral data from users showing strong cross-site purchase intent. Powered by intent scores, search queries, prices viewed, breadcrumb category paths, and scroll depth on product pages. Includes audience segments from both internal rollups and IAB Content Taxonomy topic time.",
       strongNow: true,
       strongerAfterOnboarding: false,
       signals: [
@@ -694,30 +1014,44 @@ function getPackagesPayload() {
         "Search queries containing product names and prices",
         "Prices viewed with currency and availability",
         "Breadcrumb paths: Electronics > Mobiles > Apple",
-        "Scroll depth 60%+ on product pages"
+        "Scroll depth 60%+ on product pages",
+        "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "intent_score", "top_brands", "search_queries",
+        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "intent_score", "top_brands", "search_queries",
         "prices_viewed", "breadcrumbs", "page_types", "scroll_depth",
         "visit_frequency", "age_range", "gender", "occupation", "city", "region", "country", "device"
       ],
       sampleData: [
         {
-          user_id: "usr_a7f2k9", intent_score: 9, top_brands: ["Apple", "Samsung"],
+          user_id: "usr_a7f2k9", visit_segments_30d: 40,
+          audience_segments: ["high_intent_shopper", "iab_shopping_core", "iab_technology_core"],
+          audience_segments_iab: ["iab_shopping_core", "iab_technology_core"],
+          audience_segments_rollup: ["high_intent_shopper"],
+          intent_score: 9, top_brands: ["Apple", "Samsung"],
           search_queries: ["iphone 15 pro price india", "iphone 15 pro vs 14 pro"],
           prices_viewed: ["₹134900", "₹124900"], breadcrumbs: ["Electronics", "Mobiles", "Apple"],
           page_types: ["product", "search", "comparison"], scroll_depth: 84,
           visit_frequency: 12, age_range: "18-24", gender: "M", city: "Roorkee", device: "desktop"
         },
         {
-          user_id: "usr_b3m8p1", intent_score: 8, top_brands: ["Samsung", "OnePlus"],
+          user_id: "usr_b3m8p1", visit_segments_30d: 28,
+          audience_segments: ["high_intent_shopper", "iab_shopping_audience_dominant"],
+          audience_segments_iab: ["iab_shopping_audience_dominant", "iab_shopping_core"],
+          audience_segments_rollup: ["high_intent_shopper"],
+          intent_score: 8, top_brands: ["Samsung", "OnePlus"],
           search_queries: ["samsung s24 ultra review", "best android phone 2026"],
           prices_viewed: ["₹89999", "₹79999"], breadcrumbs: ["Electronics", "Mobiles", "Samsung"],
           page_types: ["product", "review"], scroll_depth: 71,
           visit_frequency: 8, age_range: "25-34", gender: "M", city: "Delhi", device: "mobile"
         },
         {
-          user_id: "usr_c9x4r6", intent_score: 9, top_brands: ["Apple", "Sony", "Bose"],
+          user_id: "usr_c9x4r6", visit_segments_30d: 51,
+          audience_segments: ["high_intent_shopper", "iab_shopping_core", "iab_entertainment_fan"],
+          audience_segments_iab: ["iab_shopping_core", "iab_entertainment_fan"],
+          audience_segments_rollup: ["high_intent_shopper"],
+          intent_score: 9, top_brands: ["Apple", "Sony", "Bose"],
           search_queries: ["airpods pro 2 vs sony wf1000xm5", "best wireless earbuds india"],
           prices_viewed: ["₹24900", "₹19990"], breadcrumbs: ["Electronics", "Audio", "Earbuds"],
           page_types: ["comparison", "product", "checkout"], scroll_depth: 91,
@@ -734,7 +1068,7 @@ function getPackagesPayload() {
       tier: 1,
       name: "Cross-Platform Behavioral Profile",
       tagline: "Full 360° consumer behavior — data no single platform can offer",
-      description: "The most comprehensive behavioral dataset available. Reclaim's browser extension captures behavior across ALL sites — something Meta, Google, or Amazon can never do individually.",
+      description: "The most comprehensive behavioral dataset available. Reclaim's browser extension captures behavior across ALL sites — something Meta, Google, or Amazon can never do individually. Includes audience segments from both internal rollups and IAB Content Taxonomy topic time.",
       strongNow: true,
       strongerAfterOnboarding: false,
       signals: [
@@ -744,16 +1078,21 @@ function getPackagesPayload() {
         "Time-of-day browsing patterns",
         "Device type and peak active hours",
         "Content engagement (scroll depth)",
-        "Page type journey"
+        "Page type journey",
+        "IAB Content Taxonomy tier-1 time segments (parallel to internal rollups)"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "category_distribution_pct", "top_other_domains",
+        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "category_distribution_pct", "top_other_domains",
         "top_brands", "all_search_queries", "peak_hour", "device", "avg_scroll_depth",
         "total_browsing_hours", "age_range", "gender", "occupation", "city", "region", "country"
       ],
       sampleData: [
         {
           user_id: "usr_a7f2k9", visit_segments_30d: 42,
+          audience_segments: ["tech_early_adopter", "iab_technology_core", "iab_multi_category_researcher"],
+          audience_segments_iab: ["iab_technology_core", "iab_multi_category_researcher", "iab_shopping_core"],
+          audience_segments_rollup: ["tech_early_adopter"],
           category_distribution_pct: { shopping: 34, technology: 28, entertainment: 18, finance: 12, other: 8 },
           top_other_domains: ["reddit.com", "medium.com"],
           top_brands: ["Apple", "Netflix", "GitHub", "Zerodha"],
@@ -764,6 +1103,9 @@ function getPackagesPayload() {
         },
         {
           user_id: "usr_d2n7q3", visit_segments_30d: 28,
+          audience_segments: ["finance_decision_maker", "iab_business_finance_core", "iab_personal_finance_core"],
+          audience_segments_iab: ["iab_business_finance_core", "iab_personal_finance_core"],
+          audience_segments_rollup: ["finance_decision_maker"],
           category_distribution_pct: { finance: 41, news: 22, technology: 19, shopping: 11, other: 7 },
           top_other_domains: ["economictimes.indiatimes.com"],
           top_brands: ["Zerodha", "Bloomberg", "Microsoft", "Amazon"],
@@ -774,6 +1116,9 @@ function getPackagesPayload() {
         },
         {
           user_id: "usr_e5k2r8", visit_segments_30d: 51,
+          audience_segments: ["high_intent_shopper", "iab_health_wellness", "iab_style_fashion"],
+          audience_segments_iab: ["iab_health_wellness", "iab_style_fashion", "iab_shopping_core"],
+          audience_segments_rollup: ["high_intent_shopper"],
           category_distribution_pct: { shopping: 29, social: 24, entertainment: 21, health: 14, other: 12 },
           top_other_domains: ["quora.com", "pinterest.com"],
           top_brands: ["Nykaa", "Netflix", "Practo", "Myntra"],
@@ -793,7 +1138,7 @@ function getPackagesPayload() {
       tier: 2,
       name: "Finance Decision Makers",
       tagline: "Users actively researching financial products — near conversion",
-      description: "High-value audience actively browsing investment platforms, loan calculators, banking products, and insurance comparisons.",
+      description: "High-value audience actively browsing investment platforms, loan calculators, banking products, and insurance comparisons. Includes audience segments from both internal rollups and IAB Content Taxonomy topic time.",
       strongNow: true,
       strongerAfterOnboarding: true,
       onboardingUpgrade: "Occupation data (salaried/business owner/student) increases package value 3x for lenders and investment platforms",
@@ -805,12 +1150,16 @@ function getPackagesPayload() {
         "Intent scores on finance pages"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "finance_platforms_visited", "search_queries", "intent_score",
+        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "finance_platforms_visited", "search_queries", "intent_score",
         "visit_frequency", "age_range", "gender", "occupation", "city", "region", "country", "device"
       ],
       sampleData: [
         {
           user_id: "usr_f1m4k9", visit_segments_30d: 31,
+          audience_segments: ["finance_decision_maker", "iab_business_finance_core"],
+          audience_segments_iab: ["iab_business_finance_core", "iab_personal_finance_core"],
+          audience_segments_rollup: ["finance_decision_maker"],
           finance_platforms_visited: ["zerodha.com", "groww.in", "moneycontrol.com"],
           search_queries: ["best mutual fund sip 2026", "nifty 50 index fund returns"],
           intent_score: 8,
@@ -818,6 +1167,9 @@ function getPackagesPayload() {
         },
         {
           user_id: "usr_g7p2s1", visit_segments_30d: 19,
+          audience_segments: ["finance_decision_maker", "iab_finance_content_dominant"],
+          audience_segments_iab: ["iab_finance_content_dominant", "iab_business_finance_core"],
+          audience_segments_rollup: ["finance_decision_maker"],
           finance_platforms_visited: ["sbi.co.in", "hdfc.com", "bankbazaar.com"],
           search_queries: ["home loan eligibility calculator", "sbi home loan rate 2026"],
           intent_score: 9,
@@ -825,6 +1177,9 @@ function getPackagesPayload() {
         },
         {
           user_id: "usr_h3n8t4", visit_segments_30d: 12,
+          audience_segments: ["finance_decision_maker", "iab_personal_finance_core"],
+          audience_segments_iab: ["iab_personal_finance_core", "iab_business_finance_core"],
+          audience_segments_rollup: ["finance_decision_maker"],
           finance_platforms_visited: ["policybazaar.com", "coverfox.com"],
           search_queries: ["term insurance 1 crore premium", "best health insurance family floater"],
           intent_score: 7,
@@ -841,7 +1196,7 @@ function getPackagesPayload() {
       tier: 1,
       name: "Tech Early Adopters",
       tagline: "Developers, AI users, and tech enthusiasts — first to adopt new tools",
-      description: "Heavy technology browsers who use AI tools, developer platforms, and consume tech content daily.",
+      description: "Heavy technology browsers who use AI tools, developer platforms, and consume tech content daily. Includes audience segments from both internal rollups and IAB Content Taxonomy topic time.",
       strongNow: true,
       strongerAfterOnboarding: false,
       signals: [
@@ -849,16 +1204,22 @@ function getPackagesPayload() {
         "AI tool usage (claude.ai, openai.com)",
         "Developer platform visits (GitHub, StackOverflow, Vercel)",
         "Tech news consumption",
-        "Search queries for tools, frameworks, APIs"
+        "Search queries for tools, frameworks, APIs",
+        "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "tech_tools_used", "ai_tools_used", "search_queries",
+        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "tech_tools_used", "ai_tools_used", "search_queries",
         "dev_platforms_visited", "tech_browsing_hours", "device", "age_range",
         "gender", "occupation", "city", "region", "country"
       ],
       sampleData: [
         {
-          user_id: "usr_i9q5v2", tech_tools_used: ["github.com", "vercel.com", "figma.com"],
+          user_id: "usr_i9q5v2", visit_segments_30d: 36,
+          audience_segments: ["tech_early_adopter", "iab_technology_core", "iab_technology_audience_dominant"],
+          audience_segments_iab: ["iab_technology_core", "iab_technology_audience_dominant"],
+          audience_segments_rollup: ["tech_early_adopter"],
+          tech_tools_used: ["github.com", "vercel.com", "figma.com"],
           ai_tools_used: ["claude.ai", "openai.com"],
           search_queries: ["react server components 2026", "next.js vs remix"],
           dev_platforms_visited: ["stackoverflow.com", "github.com"],
@@ -866,7 +1227,11 @@ function getPackagesPayload() {
           age_range: "18-24", gender: "M", occupation: "Student", city: "Roorkee"
         },
         {
-          user_id: "usr_j2w7b6", tech_tools_used: ["github.com", "aws.amazon.com"],
+          user_id: "usr_j2w7b6", visit_segments_30d: 44,
+          audience_segments: ["tech_early_adopter", "iab_technology_core"],
+          audience_segments_iab: ["iab_technology_core", "iab_gaming_enthusiast"],
+          audience_segments_rollup: ["tech_early_adopter"],
+          tech_tools_used: ["github.com", "aws.amazon.com"],
           ai_tools_used: ["openai.com", "claude.ai"],
           search_queries: ["gpt-4o api vs claude 3.5", "aws lambda pricing"],
           dev_platforms_visited: ["github.com", "stackoverflow.com"],
@@ -874,7 +1239,11 @@ function getPackagesPayload() {
           age_range: "25-34", gender: "M", occupation: "Software Engineer", city: "Hyderabad"
         },
         {
-          user_id: "usr_k4r1m8", tech_tools_used: ["figma.com", "notion.so"],
+          user_id: "usr_k4r1m8", visit_segments_30d: 22,
+          audience_segments: ["tech_early_adopter", "iab_technology_core"],
+          audience_segments_iab: ["iab_technology_core", "iab_style_fashion"],
+          audience_segments_rollup: ["tech_early_adopter"],
+          tech_tools_used: ["figma.com", "notion.so"],
           ai_tools_used: ["claude.ai"],
           search_queries: ["figma vs framer 2026", "best design system 2026"],
           dev_platforms_visited: ["producthunt.com", "figma.com"],
@@ -892,7 +1261,7 @@ function getPackagesPayload() {
       tier: 2,
       name: "Real Estate Prospects",
       tagline: "Active property searchers weeks before they contact a broker",
-      description: "Users actively browsing property listings with location-specific searches.",
+      description: "Users actively browsing property listings with location-specific searches. Includes audience segments from both internal rollups and IAB Content Taxonomy topic time.",
       strongNow: true,
       strongerAfterOnboarding: true,
       onboardingUpgrade: "City from onboarding allows geo-targeted delivery — a Mumbai user searching 3BHK is worth 10x more than anonymous",
@@ -900,30 +1269,44 @@ function getPackagesPayload() {
         "Real estate platform visits (MagicBricks, 99acres, NoBroker)",
         "Property search queries with BHK, location, budget",
         "Property type extraction from titles",
-        "Intent scores on listing pages"
+        "Intent scores on listing pages",
+        "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "property_platforms_visited", "search_queries", "property_types",
+        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "property_platforms_visited", "search_queries", "property_types",
         "locations_searched", "intent_score", "visit_frequency", "age_range",
         "gender", "occupation", "city", "region", "country", "device"
       ],
       sampleData: [
         {
-          user_id: "usr_l6s3n1", property_platforms_visited: ["magicbricks.com", "99acres.com"],
+          user_id: "usr_l6s3n1", visit_segments_30d: 24,
+          audience_segments: ["property_seeker", "iab_real_estate_intender"],
+          audience_segments_iab: ["iab_real_estate_intender"],
+          audience_segments_rollup: ["property_seeker"],
+          property_platforms_visited: ["magicbricks.com", "99acres.com"],
           search_queries: ["3bhk flat roorkee", "flat for sale under 50 lakhs roorkee"],
           property_types: ["3BHK", "2BHK"], locations_searched: ["Roorkee", "Haridwar Road"],
           intent_score: 8, visit_frequency: 11,
           age_range: "25-34", gender: "M", occupation: "Engineer", city: "Roorkee", device: "mobile"
         },
         {
-          user_id: "usr_m8t5p3", property_platforms_visited: ["housing.com", "magicbricks.com"],
+          user_id: "usr_m8t5p3", visit_segments_30d: 18,
+          audience_segments: ["property_seeker", "iab_real_estate_intender", "iab_travel_core"],
+          audience_segments_iab: ["iab_real_estate_intender", "iab_travel_core"],
+          audience_segments_rollup: ["property_seeker"],
+          property_platforms_visited: ["housing.com", "magicbricks.com"],
           search_queries: ["2bhk rent mumbai andheri west", "flat on rent bandra"],
           property_types: ["2BHK", "PG"], locations_searched: ["Andheri West", "Bandra"],
           intent_score: 7, visit_frequency: 8,
           age_range: "22-28", gender: "F", occupation: "Working Professional", city: "Mumbai", device: "mobile"
         },
         {
-          user_id: "usr_n2v4k7", property_platforms_visited: ["99acres.com", "nobroker.in"],
+          user_id: "usr_n2v4k7", visit_segments_30d: 31,
+          audience_segments: ["property_seeker", "iab_real_estate_intender", "iab_automotive_intender"],
+          audience_segments_iab: ["iab_real_estate_intender", "iab_automotive_intender"],
+          audience_segments_rollup: ["property_seeker"],
+          property_platforms_visited: ["99acres.com", "nobroker.in"],
           search_queries: ["villa for sale bangalore whitefield", "plot in sarjapur road"],
           property_types: ["Villa", "Plot"], locations_searched: ["Whitefield", "Sarjapur Road"],
           intent_score: 9, visit_frequency: 17,
@@ -940,23 +1323,28 @@ function getPackagesPayload() {
       tier: 1,
       name: "Night Owl Impulse Buyers",
       tagline: "Late-night mobile shoppers — highest impulse purchase rate",
-      description: "Users who browse shopping and entertainment sites between 10pm–2am on mobile devices.",
+      description: "Users who browse shopping and entertainment sites between 10pm–2am on mobile devices. Includes audience segments from both internal rollups and IAB Content Taxonomy topic time.",
       strongNow: true,
       strongerAfterOnboarding: false,
       signals: [
         "Shopping/entertainment browsing between 10pm–2am",
         "Mobile device dominant",
         "Product pages visited after midnight",
-        "Impulse categories: fashion, electronics, food delivery, OTT"
+        "Impulse categories: fashion, electronics, food delivery, OTT",
+        "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "peak_shopping_hours", "device", "late_night_categories",
+        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "peak_shopping_hours", "device", "late_night_categories",
         "late_night_brands", "late_night_search_queries", "avg_session_duration_night_seconds",
         "age_range", "gender", "occupation", "city", "region", "country"
       ],
       sampleData: [
         {
           user_id: "usr_o3x6q9", visit_segments_30d: 38,
+          audience_segments: ["night_owl_shopper", "high_intent_shopper", "iab_food_drink_enthusiast", "iab_entertainment_fan"],
+          audience_segments_iab: ["iab_food_drink_enthusiast", "iab_entertainment_fan", "iab_shopping_core"],
+          audience_segments_rollup: ["night_owl_shopper", "high_intent_shopper"],
           peak_shopping_hours: ["23:00", "00:30", "01:15"],
           device: "mobile", late_night_categories: ["shopping", "entertainment", "food"],
           late_night_brands: ["Myntra", "Swiggy", "Netflix"],
@@ -966,6 +1354,9 @@ function getPackagesPayload() {
         },
         {
           user_id: "usr_p7y1s5", visit_segments_30d: 22,
+          audience_segments: ["night_owl_shopper", "tech_early_adopter", "iab_technology_core"],
+          audience_segments_iab: ["iab_technology_core", "iab_shopping_core"],
+          audience_segments_rollup: ["night_owl_shopper", "tech_early_adopter"],
           peak_shopping_hours: ["22:30", "23:45", "00:15"],
           device: "mobile", late_night_categories: ["shopping", "technology"],
           late_night_brands: ["Amazon", "Flipkart", "YouTube"],
@@ -975,6 +1366,9 @@ function getPackagesPayload() {
         },
         {
           user_id: "usr_q5w8r2", visit_segments_30d: 45,
+          audience_segments: ["night_owl_shopper", "high_intent_shopper", "iab_food_drink_enthusiast"],
+          audience_segments_iab: ["iab_food_drink_enthusiast", "iab_shopping_core"],
+          audience_segments_rollup: ["night_owl_shopper", "high_intent_shopper"],
           peak_shopping_hours: ["23:00", "00:45"],
           device: "mobile", late_night_categories: ["food", "shopping", "social"],
           late_night_brands: ["Zomato", "Meesho", "Instagram"],
@@ -997,10 +1391,11 @@ app.get("/api/packages", (req, res) => {
 
 // ─── PACKAGE ROW BUILDER (shared) ─────────────────────────────────────────────
 
-function buildPackageRows(packageId, opts = {}) {
+async function buildPackageRows(packageId, opts = {}) {
   const idScope = opts.companyScope ? `company:${opts.companyScope}` : "public";
   const allUserIds = Object.keys(userSessions);
   const rows = [];
+  const taxonomy = await iabTaxonomyPromise;
 
   for (const uid of allUserIds) {
     const uidOut = exportUserId(idScope, uid);
@@ -1031,12 +1426,19 @@ function buildPackageRows(packageId, opts = {}) {
     }
 
     const topBrands = Object.entries(allBrands).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([b]) => b);
-    const totalHours = (Object.values(totalCatSeconds).reduce((a, b) => a + b, 0) / 3600).toFixed(1);
+    const totalSecAll = Object.values(totalCatSeconds).reduce((a, b) => a + b, 0);
+    const totalHours = (totalSecAll / 3600).toFixed(1);
     const lateNightHours = visitHours.filter(h => h >= 22 || h <= 2);
 
     const visitCutoff = Date.now() - 30 * 86400000;
     const visitSegments30d = (userVisitLogs[uid] || []).filter(v => (v.ts || 0) >= visitCutoff).length;
     const visitMeta = { visit_segments_30d: visitSegments30d };
+    const segFields = audienceSegmentExportFields(sessions, totalCatSeconds, totalSecAll, visitHours, taxonomy.byId);
+    const segCols = segFields || {
+      audience_segments: null,
+      audience_segments_iab: null,
+      audience_segments_rollup: null,
+    };
 
     const dem = {
       age_range: profile.age_range || user.profile?.age_range || null,
@@ -1057,7 +1459,9 @@ function buildPackageRows(packageId, opts = {}) {
         const prices = normalizePricesFound(shoppingSessions.flatMap(s => s.pricesFound || [])).slice(0, 5);
         const breadcrumbs = shoppingSessions.find(s => s.breadcrumbs?.length)?.breadcrumbs || [];
         rows.push({
-          user_id: uidOut, ...visitMeta, intent_score: maxIntent, top_brands: topBrands,
+          user_id: uidOut, ...visitMeta,
+          ...segCols,
+          intent_score: maxIntent, top_brands: topBrands,
           search_queries: [...new Set(allSearchQueries)].slice(0, 10),
           prices_viewed: prices, breadcrumbs,
           page_types: [...new Set(shoppingSessions.flatMap(s => s.pageTypes || []))],
@@ -1080,6 +1484,7 @@ function buildPackageRows(packageId, opts = {}) {
         const peakHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
         rows.push({
           user_id: uidOut, ...visitMeta,
+          ...segCols,
           category_distribution_pct: catDist,
           ...(otherHosts.length ? { top_other_domains: otherHosts } : {}),
           top_brands: topBrands,
@@ -1102,6 +1507,7 @@ function buildPackageRows(packageId, opts = {}) {
         );
         rows.push({
           user_id: uidOut, ...visitMeta,
+          ...segCols,
           finance_platforms_visited: [...new Set(finDomains)].slice(0, 5),
           search_queries: finQueries.slice(0, 10),
           intent_score: finIntent.length ? Math.max(...finIntent) : 3,
@@ -1119,6 +1525,7 @@ function buildPackageRows(packageId, opts = {}) {
         const devPlatforms = techDomains.filter(d => ["github.com", "stackoverflow.com", "vercel.com", "netlify.com", "leetcode.com"].includes(d));
         rows.push({
           user_id: uidOut, ...visitMeta,
+          ...segCols,
           tech_tools_used: [...new Set(techDomains)].slice(0, 8),
           ai_tools_used: [...new Set(aiTools)],
           search_queries: allSearchQueries.slice(0, 10),
@@ -1139,6 +1546,7 @@ function buildPackageRows(packageId, opts = {}) {
         );
         rows.push({
           user_id: uidOut, ...visitMeta,
+          ...segCols,
           property_platforms_visited: [...new Set(reDomains)].slice(0, 5),
           search_queries: reQueries.slice(0, 10),
           property_types: [...new Set(reSessions.map(s => s.property_type).filter(Boolean))],
@@ -1160,6 +1568,7 @@ function buildPackageRows(packageId, opts = {}) {
         if (!nightSessions.length) continue;
         rows.push({
           user_id: uidOut, ...visitMeta,
+          ...segCols,
           peak_shopping_hours: lateNightHours.map(h => `${h}:00`),
           device: deviceType,
           late_night_categories: [...new Set(nightSessions.map(s => s.category))],
@@ -1200,7 +1609,26 @@ const CUSTOM_CATEGORY_PRICE_USD = {
 /** Export field names per category — keep in sync with `DATA_CATEGORIES[].exportColumns` in CompanyDashboard.jsx and with `buildCustomPackageRows`. */
 const CUSTOM_CATEGORY_EXPORT_COLUMNS = {
   demographics: ["age_range", "gender", "occupation", "city", "state", "country", "device"],
-  browsing_behavior: ["top_categories", "total_browsing_hours", "time_spent_per_category", "active_days", "peak_hour"],
+  browsing_behavior: [
+    "top_categories",
+    "total_browsing_hours",
+    "time_spent_per_category",
+    "active_days",
+    "peak_hour",
+    "iab_provider",
+    "iab_taxonomy",
+    "iab_primary_id",
+    "iab_primary_name",
+    "iab_primary_confidence",
+    "iab_primary_weight_seconds",
+    "iab_top_categories",
+    "iab_content_taxonomy_version",
+    "iab_content_primary_id",
+    "iab_content_primary_name",
+    "iab_content_primary_confidence",
+    "iab_content_primary_weight_seconds",
+    "iab_content_affinity_top",
+  ],
   purchase_intent: ["max_intent_score", "intent_by_vertical", "price_ranges_viewed", "intent_search_queries"],
   brand_affinity: ["top_brands_researched", "premium_brands", "premium_brand_flag", "brand_cross_site_visits"],
   content_signals: ["page_types", "search_queries", "max_scroll_depth", "breadcrumbs", "keywords"],
@@ -1214,7 +1642,7 @@ const CUSTOM_CATEGORY_EXPORT_COLUMNS = {
     "tech_browsing_hours", "tech_early_adopter", "tech_domains_visited", "ai_tools_used",
     "dev_platforms_visited", "tech_brands_researched", "device",
   ],
-  audience_segments: ["audience_segments"],
+  audience_segments: ["audience_segments", "audience_segments_iab", "audience_segments_rollup"],
 };
 
 function parseCustomCategoryIds(categoryIds) {
@@ -1245,11 +1673,12 @@ const PREMIUM_BRANDS_LOWER = new Set([
   "rolex", "lv", "gucci", "netflix", "google", "microsoft", "amazon",
 ]);
 
-function buildCustomPackageRows(categoryIds, opts = {}) {
+async function buildCustomPackageRows(categoryIds, opts = {}) {
   const idScope = opts.companyScope ? `company:${opts.companyScope}` : "public";
   const catSet = new Set(categoryIds);
   const allUserIds = Object.keys(userSessions);
   const rows = [];
+  const taxonomy = await iabTaxonomyPromise;
 
   for (const uid of allUserIds) {
     const uidOut = exportUserId(idScope, uid);
@@ -1343,12 +1772,128 @@ function buildCustomPackageRows(categoryIds, opts = {}) {
         catHours[c] = parseFloat((sec / 3600).toFixed(2));
       }
       if (topCats.length) {
+        const flatSessions = Object.values(sessions).flatMap((day) => Object.values(day || {}));
+        const iabWeights = new Map();
+        let iabProvider = null;
+        let iabTaxonomy = null;
+
+        const contentWeights = new Map();
+        let contentTaxonomyVersion = null;
+
+        for (const s of flatSessions) {
+          const w = s.totalSeconds || 0;
+          if (!w) continue;
+          if (!iabProvider && s.iab_provider) iabProvider = s.iab_provider;
+          if (!iabTaxonomy && s.iab_taxonomy) iabTaxonomy = s.iab_taxonomy;
+
+          const key = s.iab_primary_id != null ? `id:${s.iab_primary_id}` : (s.iab_primary_name ? `name:${s.iab_primary_name}` : null);
+          if (!key) continue;
+          const prev = iabWeights.get(key) || {
+            id: s.iab_primary_id ?? null,
+            name: s.iab_primary_name || null,
+            confidence: s.iab_primary_confidence ?? null,
+            seconds: 0,
+          };
+          prev.seconds += w;
+          if (prev.confidence == null && s.iab_primary_confidence != null) prev.confidence = s.iab_primary_confidence;
+          iabWeights.set(key, prev);
+
+          const cid = s.iab_content_primary_id ?? null;
+          const cname = s.iab_content_primary_name || null;
+          const cconf = s.iab_content_primary_confidence ?? null;
+          const ckey = cid != null ? `id:${cid}` : (cname ? `name:${cname}` : null);
+          if (ckey) {
+            if (!contentTaxonomyVersion && s.iab_content?.taxonomy_version) contentTaxonomyVersion = s.iab_content.taxonomy_version;
+            const prevC = contentWeights.get(ckey) || { id: cid, name: cname, confidence: cconf, seconds: 0 };
+            prevC.seconds += w;
+            if (prevC.confidence == null && cconf != null) prevC.confidence = cconf;
+            contentWeights.set(ckey, prevC);
+          }
+        }
+
+        let best = null;
+        for (const v of iabWeights.values()) {
+          if (!best || v.seconds > best.seconds) best = v;
+        }
+
+        let bestContent = null;
+        for (const v of contentWeights.values()) {
+          if (!bestContent || v.seconds > bestContent.seconds) bestContent = v;
+        }
+
+        const catCounts = new Map();
+        for (const s of flatSessions) {
+          const list = Array.isArray(s.iab_categories) ? s.iab_categories : [];
+          for (const c of list) {
+            const id = c?.id;
+            const name = c?.name;
+            const conf = c?.confidence;
+            const k = id != null ? `id:${id}` : (name ? `name:${name}` : null);
+            if (!k) continue;
+            const cur = catCounts.get(k) || { id: id ?? null, name: name || null, confidence: conf ?? null, hits: 0 };
+            cur.hits += 1;
+            if (cur.confidence == null && conf != null) cur.confidence = conf;
+            catCounts.set(k, cur);
+          }
+        }
+        const iabTop = [...catCounts.values()].sort((a, b) => b.hits - a.hits).slice(0, 8);
+
+        const contentAffinityCounts = new Map();
+        for (const s of flatSessions) {
+          const list = Array.isArray(s.iab_content?.mappings) ? s.iab_content.mappings : [];
+          for (const m of list) {
+            const id = m?.iab_content?.id;
+            const name = m?.iab_content?.name;
+            const conf = m?.match?.confidence;
+            const k = id != null ? `id:${id}` : (name ? `name:${name}` : null);
+            if (!k) continue;
+            const cur = contentAffinityCounts.get(k) || { id: id ?? null, name: name || null, confidence: conf ?? null, hits: 0 };
+            cur.hits += 1;
+            if (cur.confidence == null && conf != null) cur.confidence = conf;
+            contentAffinityCounts.set(k, cur);
+          }
+        }
+        const contentTop = [...contentAffinityCounts.values()].sort((a, b) => b.hits - a.hits).slice(0, 8);
+
         Object.assign(row, {
           top_categories: topCats,
           total_browsing_hours: parseFloat((totalSecondsAll / 3600).toFixed(2)),
           time_spent_per_category: catHours,
           active_days: Object.keys(sessions).slice(-7),
           peak_hour: peakHour,
+          ...(best
+            ? {
+                iab_provider: iabProvider,
+                iab_taxonomy: iabTaxonomy,
+                iab_primary_id: best.id,
+                iab_primary_name: best.name,
+                iab_primary_confidence: best.confidence,
+                iab_primary_weight_seconds: Math.round(best.seconds),
+              }
+            : {
+                iab_provider: iabProvider,
+                iab_taxonomy: iabTaxonomy,
+                iab_primary_id: null,
+                iab_primary_name: null,
+                iab_primary_confidence: null,
+                iab_primary_weight_seconds: null,
+              }),
+          iab_top_categories: iabTop.length ? iabTop : null,
+          iab_content_taxonomy_version: contentTaxonomyVersion,
+          ...(bestContent
+            ? {
+                iab_content_primary_id: bestContent.id,
+                iab_content_primary_name: bestContent.name,
+                iab_content_primary_confidence: bestContent.confidence,
+                iab_content_primary_weight_seconds: Math.round(bestContent.seconds),
+              }
+            : {
+                iab_content_primary_id: null,
+                iab_content_primary_name: null,
+                iab_content_primary_confidence: null,
+                iab_content_primary_weight_seconds: null,
+              }),
+          iab_content_affinity_top: contentTop.length ? contentTop : null,
         });
         hasAnyData = true;
       }
@@ -1477,19 +2022,19 @@ function buildCustomPackageRows(categoryIds, opts = {}) {
     }
 
     if (catSet.has("audience_segments")) {
-      const isNightOwl = lateNightHrs.length > 0;
-      const segments = [];
-      if ((totalCatSeconds.shopping || 0) > 1800) segments.push("high_intent_shopper");
-      if ((totalCatSeconds.finance || 0) > 900) segments.push("finance_decision_maker");
-      if ((totalCatSeconds.technology || 0) > 1800) segments.push("tech_early_adopter");
-      if ((totalCatSeconds.realestate || 0) > 600) segments.push("property_seeker");
-      if ((totalCatSeconds.jobs || 0) > 600) segments.push("job_seeker");
-      if ((totalCatSeconds.travel || 0) > 600) segments.push("travel_planner");
-      if (isNightOwl && (totalCatSeconds.shopping || 0) > 600) segments.push("night_owl_shopper");
-      if (segments.length) {
-        Object.assign(row, { audience_segments: segments });
-        hasAnyData = true;
-      }
+      const segFields = audienceSegmentExportFields(
+        sessions,
+        totalCatSeconds,
+        totalSecondsAll,
+        visitHours,
+        taxonomy.byId
+      );
+      Object.assign(row, segFields || {
+        audience_segments: null,
+        audience_segments_iab: null,
+        audience_segments_rollup: null,
+      });
+      if (segFields) hasAnyData = true;
     }
 
     if (hasAnyData) rows.push(row);
@@ -1538,10 +2083,10 @@ function sendJsonDownload(res, filenameBase, payload) {
 }
 
 // ─── /api/purchase ────────────────────────────────────────────────────────────
-app.post("/api/purchase", (req, res) => {
+app.post("/api/purchase", async (req, res) => {
   const { packageId, format = "json" } = req.body;
   if (!packageId) return res.status(400).json({ error: "packageId required" });
-  const rows = buildPackageRows(packageId);
+  const rows = await buildPackageRows(packageId);
   if (format === "csv") {
     return sendCsvDownload(res, `${packageId}_${Date.now()}`, rows);
   }
@@ -1560,13 +2105,13 @@ app.get("/api/company/purchases", companyCors(), requireCompanyAuth, (req, res) 
   return res.json({ purchases: list.slice().sort((a, b) => b.createdAt - a.createdAt) });
 });
 
-app.post("/api/company/purchase", companyCors(), requireCompanyAuth, (req, res) => {
+app.post("/api/company/purchase", companyCors(), requireCompanyAuth, async (req, res) => {
   const { company } = req.companyAuth;
   const { packageId, format = "csv" } = req.body || {};
   if (!packageId) return res.status(400).json({ error: "packageId required" });
   if (!["csv", "json"].includes(format)) return res.status(400).json({ error: "format must be csv or json" });
 
-  const rows = buildPackageRows(packageId, { companyScope: company.id });
+  const rows = await buildPackageRows(packageId, { companyScope: company.id });
   if (!rows.length) return res.status(404).json({ error: "no data available for this package yet" });
   const purchaseId = crypto.randomBytes(12).toString("hex");
   const rec = {
@@ -1579,7 +2124,7 @@ app.post("/api/company/purchase", companyCors(), requireCompanyAuth, (req, res) 
   return res.json({ purchaseId, rowCount: rows.length, downloadUrl });
 });
 
-app.post("/api/company/purchase/custom", companyCors(), requireCompanyAuth, (req, res) => {
+app.post("/api/company/purchase/custom", companyCors(), requireCompanyAuth, async (req, res) => {
   const { company } = req.companyAuth;
   const { categoryIds, signals, format = "csv" } = req.body || {};
 
@@ -1592,7 +2137,7 @@ app.post("/api/company/purchase/custom", companyCors(), requireCompanyAuth, (req
   const ids = parsed.ids;
   const priceUsd = computeCustomPackagePriceUsd(ids);
 
-  const rows = buildCustomPackageRows(ids, { companyScope: company.id });
+  const rows = await buildCustomPackageRows(ids, { companyScope: company.id });
   if (!rows.length) {
     return res.status(404).json({ error: "no matching user data for the selected categories yet" });
   }
@@ -1631,7 +2176,7 @@ app.get("/api/company/custom-pricing", companyCors(), requireCompanyAuth, (_req,
   });
 });
 
-app.get("/api/company/download/:purchaseId", companyCors(), requireCompanyAuth, (req, res) => {
+app.get("/api/company/download/:purchaseId", companyCors(), requireCompanyAuth, async (req, res) => {
   const { company } = req.companyAuth;
   const { purchaseId } = req.params;
   const format = (req.query.format || "csv").toString();
@@ -1647,8 +2192,8 @@ app.get("/api/company/download/:purchaseId", companyCors(), requireCompanyAuth, 
     : `${purchase.packageId}_${date}_${purchase.id}`;
 
   const rows = purchase.isCustom
-    ? buildCustomPackageRows(purchase.categoryIds || [], { companyScope: company.id })
-    : buildPackageRows(purchase.packageId, { companyScope: company.id });
+    ? await buildCustomPackageRows(purchase.categoryIds || [], { companyScope: company.id })
+    : await buildPackageRows(purchase.packageId, { companyScope: company.id });
 
   if (format === "csv") {
     return sendCsvDownload(res, filenameBase, rows);
