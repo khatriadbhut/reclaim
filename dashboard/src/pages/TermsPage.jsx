@@ -1,3 +1,4 @@
+import { legalPath } from "../legalNav.js";
 import LegalLayout, { LEGAL_LAST_UPDATED } from "./LegalLayout.jsx";
 
 export default function TermsPage() {
@@ -14,7 +15,7 @@ export default function TermsPage() {
         Reclaim provides an <strong>opt-in</strong> program that may collect browsing-related signals through a browser
         extension, combine them with profile information you provide, and use that information to operate the
         Service — including displaying modeled or estimated value in your dashboard and, where described in our{" "}
-        <a href="/privacy">Privacy Policy</a>
+        <a href={legalPath("/privacy")}>Privacy Policy</a>
         , preparing anonymized or aggregated outputs for business customers. <strong>Cash payouts</strong> or on-chain
         settlement may be offered in the future; until then, any earnings shown are <strong>modeled or illustrative</strong>,
         not a guarantee of payment.

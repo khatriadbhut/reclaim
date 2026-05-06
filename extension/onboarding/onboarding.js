@@ -484,8 +484,16 @@ document.getElementById("doneBtn").addEventListener("click", async () => {
   const terms = document.getElementById("legal-terms-link");
   const privacy = document.getElementById("legal-privacy-link");
   const base = `${PUBLIC_SITE_ORIGIN.replace(/\/$/, "")}`;
-  if (terms) terms.href = `${base}/terms`;
-  if (privacy) privacy.href = `${base}/privacy`;
+  let extQ = "";
+  try {
+    if (typeof chrome !== "undefined" && chrome.runtime?.id) {
+      extQ = `?ext=${encodeURIComponent(chrome.runtime.id)}`;
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  if (terms) terms.href = `${base}/terms${extQ}`;
+  if (privacy) privacy.href = `${base}/privacy${extQ}`;
 })();
 
 if (isReturning) {

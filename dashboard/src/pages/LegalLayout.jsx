@@ -1,3 +1,5 @@
+import { getLegalBackHomeHref, legalNavLabel } from "../legalNav.js";
+
 /** Shared chrome for Terms & Privacy (desktop-readable, matches onboarding palette). */
 export const LEGAL_LAST_UPDATED = "May 6, 2026";
 
@@ -82,12 +84,15 @@ const CSS = `
 `;
 
 export default function LegalLayout({ title, children }) {
+  const homeHref = getLegalBackHomeHref();
+  const homeLabel = legalNavLabel(homeHref);
+
   return (
     <div className="ldoc">
       <style>{CSS}</style>
       <div className="ldoc-inner">
         <nav className="ldoc-nav" aria-label="Breadcrumb">
-          <a href="/">← Reclaim home</a>
+          <a href={homeHref}>{homeLabel}</a>
         </nav>
         <h1>{title}</h1>
         <p className="ldoc-meta">Last updated: {LEGAL_LAST_UPDATED}</p>

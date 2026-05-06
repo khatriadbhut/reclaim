@@ -1,3 +1,4 @@
+import { legalPath } from "../legalNav.js";
 import LegalLayout, { LEGAL_LAST_UPDATED } from "./LegalLayout.jsx";
 
 export default function PrivacyPage() {
@@ -7,7 +8,7 @@ export default function PrivacyPage() {
         This Privacy Policy explains how Reclaim (&quot;we,&quot; &quot;us&quot;) collects, uses, and shares information
         when you use our Chrome extension, web dashboards, and related services (the &quot;Service&quot;). It should be
         read together with our{" "}
-        <a href="/terms">Terms of Service</a>
+        <a href={legalPath("/terms")}>Terms of Service</a>
         .
       </p>
 
