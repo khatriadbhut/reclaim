@@ -476,6 +476,17 @@ export default function CompanyDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // BFCache: Back from Google can restore a frozen /company tab with stale React state
+  // while cookies/session are already correct (or the opposite). Re-sync from the server.
+  useEffect(() => {
+    function onPageShow(e) {
+      if (e.persisted) void bootstrapCompany();
+    }
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function bootstrapCompany() {
     setCompanyAuthLoading(true);
     setCompanyError("");
@@ -483,13 +494,16 @@ export default function CompanyDashboard() {
       const res = await fetch(`${BACKEND}/api/company/auth/me`, { credentials: "include" });
       if (!res.ok) {
         setCompanyMe(null);
+        setPackages([]);
+        setPurchases([]);
         setCompanyAuthLoading(false);
         return;
       }
       const me = await res.json();
       setCompanyMe(me);
       setCompanyAuthLoading(false);
-      await Promise.all([loadCompanyPackages(), loadCompanyPurchases()]);
+      await loadCompanyPackages();
+      await loadCompanyPurchases();
     } catch (e) {
       setCompanyError(e?.message || "Failed to connect to backend.");
       setCompanyMe(null);
@@ -530,7 +544,9 @@ export default function CompanyDashboard() {
   }
 
   function startCompanyGoogleOAuth() {
-    window.location.href = `${BACKEND}/api/company/auth/google/start`;
+    // replace: avoids an extra /company history entry so Back from Google
+    // does not land on a stale pre-OAuth dashboard snapshot as often.
+    window.location.replace(`${BACKEND}/api/company/auth/google/start`);
   }
 
   async function companyLogout() {
