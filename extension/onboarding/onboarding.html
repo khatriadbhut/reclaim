@@ -15,7 +15,8 @@
     html, body {
       min-height: 100vh; background: var(--bg); color: var(--text);
       font-family: 'Syne', sans-serif; display: flex;
-      align-items: flex-start; justify-content: center; padding: 48px 16px 80px;
+      align-items: flex-start; justify-content: center;
+      padding: 48px 16px calc(80px + env(safe-area-inset-bottom, 0px));
     }
     .card { width: 100%; max-width: 480px; }
 
@@ -32,9 +33,19 @@
       animation: pulse 2s infinite;
     }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @media (prefers-reduced-motion: reduce) {
+      .logo-dot { animation: none; opacity: 1; }
+    }
 
     /* ── Steps ── */
-    .step-indicator { display: flex; gap: 6px; margin-bottom: 36px; }
+    .step-indicator { display: flex; gap: 6px; margin-bottom: 10px; }
+    .step-meta {
+      font-family: 'DM Mono', monospace;
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.5px;
+      margin-bottom: 28px;
+    }
     .step-pip { height: 3px; flex: 1; background: var(--border); border-radius: 2px; transition: background 0.3s; }
     .step-pip.active { background: var(--accent); }
     .step-pip.done { background: #00e5a055; }
@@ -57,7 +68,14 @@
     .subtitle { font-size: 13px; color: var(--muted); font-family: 'DM Mono', monospace; line-height: 1.6; margin-bottom: 28px; }
 
     /* ── Consent ── */
-    .consent-block { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+    .consent-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 0 0 1px rgba(0,229,160,0.04);
+    }
     .consent-block-title { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 14px; }
     .consent-item { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 12px; }
     .consent-item:last-child { margin-bottom: 0; }
@@ -65,8 +83,9 @@
     .consent-text { font-size: 13px; color: var(--text); line-height: 1.5; }
     .consent-text .dim { color: var(--muted); font-family: 'DM Mono', monospace; font-size: 12px; }
     .highlight-block { background: var(--accent-dim); border: 1px solid #00e5a025; border-radius: 10px; padding: 16px 20px; margin-bottom: 28px; font-size: 13px; color: #c0fff0; font-family: 'DM Mono', monospace; line-height: 1.6; }
-    .terms-link { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 20px; display: block; }
-    .terms-link a { color: var(--accent); text-decoration: none; }
+    .terms-link { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 20px; display: block; line-height: 1.6; }
+    .terms-link a { color: var(--accent); text-decoration: none; border-radius: 4px; }
+    .terms-link a:hover { text-decoration: underline; }
 
     /* ── Sign-in ── */
     .google-btn { width: 100%; padding: 14px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 15px; font-family: 'Syne', sans-serif; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 12px; transition: all 0.2s; margin-bottom: 12px; }
@@ -86,7 +105,23 @@
     .field-group { margin-bottom: 28px; }
     .field-label { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 12px; display: block; }
     .pill-group { display: flex; flex-wrap: wrap; gap: 8px; }
-    .pill { padding: 8px 16px; border-radius: 100px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 13px; font-family: 'Syne', sans-serif; font-weight: 600; cursor: pointer; transition: all 0.15s; user-select: none; }
+    .pill {
+      padding: 10px 18px;
+      min-height: 44px;
+      border-radius: 100px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 13px;
+      font-family: 'Syne', sans-serif;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
     .pill:hover { border-color: #00e5a040; color: var(--text); }
     .pill.selected { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
     .styled-select { width: 100%; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; font-family: 'Syne', sans-serif; font-weight: 600; cursor: pointer; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 16px center; }
@@ -110,8 +145,18 @@
     .location-btn { width: 100%; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-size: 15px; font-family: 'Syne', sans-serif; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px; transition: all 0.2s; margin-bottom: 12px; }
     .location-btn:hover { border-color: var(--accent); color: var(--accent); }
     .location-btn.granted { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); cursor: default; }
-    .skip-link { display: block; text-align: center; font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; cursor: pointer; margin-bottom: 24px; transition: color 0.15s; }
+    .skip-link {
+      display: block; width: 100%;
+      text-align: center; font-size: 12px; color: var(--muted);
+      font-family: 'DM Mono', monospace;
+      cursor: pointer; margin-bottom: 24px;
+      transition: color 0.15s;
+      background: none; border: none;
+      border-radius: 6px;
+      padding: 10px 8px;
+    }
     .skip-link:hover { color: var(--text); }
+    .skip-link:disabled { opacity: 0.5; cursor: not-allowed; }
 
     /* ── Location Denied Modal ── */
     .modal-overlay {
@@ -147,27 +192,34 @@
     .btn-primary { background: var(--accent); color: #000; }
     .btn-ghost { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
     .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .pill:focus-visible { outline-offset: 3px; }
   </style>
 </head>
 <body>
-<div class="card">
+<div class="card" role="main">
   <!-- Logo — unified style -->
   <div class="logo">
     <span><span class="logo-text-re">re</span><span class="logo-text-claim">claim</span></span>
     <div class="logo-dot"></div>
   </div>
 
-  <div class="step-indicator">
+  <div class="step-indicator" id="step-indicator" aria-hidden="true">
     <div class="step-pip" id="pip-1"></div>
     <div class="step-pip" id="pip-2"></div>
     <div class="step-pip" id="pip-3"></div>
     <div class="step-pip" id="pip-4"></div>
     <div class="step-pip" id="pip-5"></div>
   </div>
+  <p class="step-meta" id="step-meta" aria-live="polite"></p>
 
   <!-- STEP 1: T&C -->
-  <div class="step" id="step-1">
-    <h1>Before we<br><span class="accent">get started.</span></h1>
+  <div class="step" id="step-1" role="region" aria-labelledby="step-1-heading">
+    <h1 id="step-1-heading">Before we<br><span class="accent">get started.</span></h1>
     <p class="subtitle">Here's exactly what Reclaim does — and what you're agreeing to.</p>
     <div class="consent-block">
       <div class="consent-block-title">What we collect</div>
@@ -180,18 +232,18 @@
       <div class="consent-block-title">How it's used</div>
       <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Your data is anonymized and grouped into audience segments</div></div>
       <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Segments are sold to companies for market research and ad targeting</div></div>
-      <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Your real name, email, or raw IP is never sold or stored</div></div>
+      <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Your real name, email, and raw IP are never sold — buyers only get anonymized segments, not your identity<div class="dim">we store Google name &amp; email for your account and payouts only</div></div></div>
     </div>
     <div class="highlight-block">Meta, Google, and Instagram do all of the above — silently, without paying you a cent. Reclaim shows you exactly what's collected and gives you a cut of every sale.</div>
-    <span class="terms-link">By continuing you agree to our <a href="#" target="_blank">Terms of Service</a> and <a href="#" target="_blank">Privacy Policy</a>.</span>
-    <button class="btn btn-primary" id="agreeBtn">I Agree — Let's Go</button>
+    <span class="terms-link">By continuing you agree to our <a id="legal-terms-link" href="about:blank" target="_blank" rel="noopener noreferrer">Terms of Service</a> and <a id="legal-privacy-link" href="about:blank" target="_blank" rel="noopener noreferrer">Privacy Policy</a> (opens the Reclaim site).</span>
+    <button type="button" class="btn btn-primary" id="agreeBtn">I Agree — Let's Go</button>
   </div>
 
   <!-- STEP 2: SIGN IN -->
-  <div class="step" id="step-2">
-    <button class="back-btn" id="backBtn-2">← Back</button>
-    <h1>Sign in to<br><span class="accent">Reclaim.</span></h1>
-    <p class="subtitle">Your account links your earnings and profile across devices. We only use your name and email — nothing else.</p>
+  <div class="step" id="step-2" role="region" aria-labelledby="step-2-heading">
+    <button type="button" class="back-btn" id="backBtn-2">← Back</button>
+    <h1 id="step-2-heading">Sign in to<br><span class="accent">Reclaim.</span></h1>
+    <p class="subtitle">Your account links earnings and profile across devices. Google name and email are for login and your account — not sold to buyers.</p>
     <div class="user-card" id="userCard">
       <div id="userAvatarWrap"></div>
       <div class="user-info">
@@ -199,7 +251,7 @@
         <div class="user-email" id="userCardEmail"></div>
       </div>
     </div>
-    <button class="google-btn" id="googleSignInBtn">
+    <button type="button" class="google-btn" id="googleSignInBtn">
       <svg class="google-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
         <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
         <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
@@ -208,15 +260,15 @@
       </svg>
       Continue with Google
     </button>
-    <button class="btn btn-ghost" id="switchAccountBtn" style="display:none">Use a different Google account</button>
+    <button type="button" class="btn btn-ghost" id="switchAccountBtn" style="display:none">Use a different Google account</button>
     <div class="signin-error" id="signinError">Sign in failed. Please try again.</div>
-    <button class="btn btn-primary" id="signInNextBtn" style="margin-top:16px" disabled>Continue</button>
+    <button type="button" class="btn btn-primary" id="signInNextBtn" style="margin-top:16px" disabled>Continue</button>
   </div>
 
   <!-- STEP 3: DEMOGRAPHICS -->
-  <div class="step" id="step-3">
-    <button class="back-btn" id="backBtn-3">← Back</button>
-    <h1>Tell us<br><span class="accent">about yourself.</span></h1>
+  <div class="step" id="step-3" role="region" aria-labelledby="step-3-heading">
+    <button type="button" class="back-btn" id="backBtn-3">← Back</button>
+    <h1 id="step-3-heading">Tell us<br><span class="accent">about yourself.</span></h1>
     <p class="subtitle">This makes your data more valuable — and directly increases your earnings per hour.</p>
 
     <!-- Shown only for returning users with existing data -->
@@ -252,38 +304,38 @@
         <option value="other">Other</option>
       </select>
     </div>
-    <button class="btn btn-primary" id="demoNextBtn" disabled>Continue</button>
+    <button type="button" class="btn btn-primary" id="demoNextBtn" disabled>Continue</button>
   </div>
 
   <!-- STEP 4: LOCATION -->
-  <div class="step" id="step-4">
-    <button class="back-btn" id="backBtn-4">← Back</button>
-    <h1>Where are<br><span class="accent">you based?</span></h1>
+  <div class="step" id="step-4" role="region" aria-labelledby="step-4-heading">
+    <button type="button" class="back-btn" id="backBtn-4">← Back</button>
+    <h1 id="step-4-heading">Where are<br><span class="accent">you based?</span></h1>
     <p class="subtitle">City-level location makes your data significantly more valuable — real estate and finance packages pay 3–10× more with location attached.</p>
     <div class="location-result" id="locationResult">
       <div class="location-result-label">Detected Location</div>
       <div class="location-result-value" id="locationCity">—</div>
       <div class="location-result-source" id="locationSource"></div>
     </div>
-    <button class="location-btn" id="locationBtn"><span>📍</span> Allow Location Access</button>
-    <span class="skip-link" id="skipLocation">skip — use IP-based location instead</span>
-    <button class="btn btn-primary" id="locationNextBtn" disabled>Continue</button>
+    <button type="button" class="location-btn" id="locationBtn"><span aria-hidden="true">📍</span> Allow Location Access</button>
+    <button type="button" class="skip-link" id="skipLocation">skip — use IP-based location instead</button>
+    <button type="button" class="btn btn-primary" id="locationNextBtn" disabled>Continue</button>
   </div>
 
   <!-- STEP 5: SUCCESS -->
-  <div class="step" id="step-5">
-    <span class="success-icon">✦</span>
-    <h1>You're all<br><span class="accent">set up.</span></h1>
+  <div class="step" id="step-5" role="region" aria-labelledby="step-5-heading">
+    <span class="success-icon" aria-hidden="true">✦</span>
+    <h1 id="step-5-heading">You're all<br><span class="accent">set up.</span></h1>
     <p class="subtitle">Your profile is saved. Reclaim is now tracking and earning in the background.</p>
     <div class="profile-summary" id="profileSummary"></div>
-    <button class="btn btn-primary" id="doneBtn">Start Earning</button>
+    <button type="button" class="btn btn-primary" id="doneBtn">Start Earning</button>
   </div>
 </div>
 
 <!-- Location Denied Modal -->
 <div class="modal-overlay" id="locationDeniedModal">
   <div class="modal-box">
-    <div class="modal-title">📍 Location <span class="accent">blocked</span></div>
+    <div class="modal-title"><span aria-hidden="true">📍</span> Location <span class="accent">blocked</span></div>
     <div class="modal-body">
       Chrome remembered your denial and won't re-prompt. To enable GPS:
       <ol>
@@ -295,8 +347,8 @@
       <br>Or we can use your IP address for a city-level estimate instead.
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" id="locationModalIp">Use IP-based location instead</button>
-      <button class="btn btn-ghost" id="locationModalClose">Dismiss</button>
+      <button type="button" class="btn btn-ghost" id="locationModalIp">Use IP-based location instead</button>
+      <button type="button" class="btn btn-ghost" id="locationModalClose">Dismiss</button>
     </div>
   </div>
 </div>

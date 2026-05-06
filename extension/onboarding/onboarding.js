@@ -7,6 +7,10 @@
 // Step 1: T&C  |  Step 2: Google Sign In  |  Step 3: Demographics  |  Step 4: Location  |  Step 5: Success
 
 const BACKEND_URL = "http://localhost:3000";
+/** Dashboard / marketing site origin — Terms & Privacy anchors live here. Set to production URL for store builds. */
+const PUBLIC_SITE_ORIGIN = "http://localhost:5173";
+
+const STEP_LABELS = ["Consent", "Account", "Profile", "Location", "Done"];
 
 const formData = { age_range: null, gender: null, occupation: null, location: null };
 const authData = { userId: null, name: null, email: null, picture: null };
@@ -28,7 +32,23 @@ function showStep(n) {
   }
   currentStep = n;
   updateBackButtons(n);
+
+  const meta = document.getElementById("step-meta");
+  if (meta) meta.textContent = `Step ${n} of ${TOTAL_STEPS} · ${STEP_LABELS[n - 1]}`;
+
   window.scrollTo({ top: 0, behavior: "smooth" });
+
+  requestAnimationFrame(() => {
+    const heading = document.querySelector(`#step-${n} h1`);
+    if (heading) {
+      heading.setAttribute("tabindex", "-1");
+      try {
+        heading.focus({ preventScroll: true });
+      } catch {
+        heading.focus();
+      }
+    }
+  });
 }
 
 // ─── BACK BUTTONS ─────────────────────────────────────────────────────────────
@@ -368,7 +388,7 @@ document.getElementById("locationBtn").addEventListener("click", async () => {
 document.getElementById("skipLocation").addEventListener("click", async () => {
   const skipEl = document.getElementById("skipLocation");
   skipEl.textContent = "fetching location...";
-  skipEl.style.pointerEvents = "none";
+  skipEl.disabled = true;
   const loc = await fetchIpLocation();
   showLocationResult(loc);
   skipEl.textContent = "using IP-based location";
@@ -459,6 +479,14 @@ document.getElementById("doneBtn").addEventListener("click", async () => {
 });
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
+
+(function initLegalLinks() {
+  const terms = document.getElementById("legal-terms-link");
+  const privacy = document.getElementById("legal-privacy-link");
+  const base = `${PUBLIC_SITE_ORIGIN.replace(/\/$/, "")}`;
+  if (terms) terms.href = `${base}/#terms`;
+  if (privacy) privacy.href = `${base}/#privacy`;
+})();
 
 if (isReturning) {
   // Returning user (e.g. opened from popup/settings as ?returning=true)
