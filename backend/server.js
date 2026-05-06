@@ -2444,4 +2444,5 @@ app.get("/api/health", (req, res) => res.json({
 app.listen(PORT, () => {
   console.log(`Reclaim backend running on http://localhost:${PORT}`);
   console.log(`Gemini API key: ${process.env.GEMINI_API_KEY ? "✓ loaded" : "✗ missing"}`);
+  console.log(`WhoisXML API key: ${process.env.WHOISXML_API_KEY ? "✓ loaded" : "✗ missing"}`);
 });
