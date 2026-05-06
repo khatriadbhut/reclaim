@@ -314,8 +314,12 @@ const CSS = `
 
   .rclCardTag {
     font-family: 'Space Mono', monospace;
-    font-size: 10px; letter-spacing: 2px; text-transform: lowercase;
-    margin-bottom: 20px; display: block;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: lowercase;
+    line-height: 1.4;
+    margin-bottom: 20px;
+    display: block;
   }
   .rclCardTag--u { color: var(--g); }
   .rclCardTag--b { color: var(--bl); }
@@ -612,7 +616,7 @@ export default function Landing() {
                 <span className={`rclCardTag rclCardTag--${isU ? "u" : "b"}`}>{p.tag}</span>
 
                 <div className={`rclCardIcon rclCardIcon--${isU ? "u" : "b"}`} aria-hidden="true">
-                  {isU ? "◈" : "◇"}
+                  ◇
                 </div>
 
                 <div className="rclCardTitle">{p.title}</div>
