@@ -81,6 +81,90 @@ function normalizePricesFound(pricesFound) {
   });
 }
 
+function inferQueryInsightsBase(queries) {
+  const list = Array.isArray(queries) ? queries : [];
+  const cleaned = list
+    .map((q) => String(q || "").trim())
+    .filter(Boolean)
+    .slice(0, 50);
+  if (!cleaned.length) {
+    return {
+      intent_level: "none",
+      intent_reasons: null,
+      intent_topics: null,
+      intent_keyword_hits: null,
+    };
+  }
+
+  const HITS = {
+    price: /\b(price|pricing|cost|rate|mrp|₹|rs|inr|\$|usd|eur|gbp)\b/i,
+    deal: /\b(deal|discount|offer|offers|sale|flash sale|limited time|clearance|promo)\b/i,
+    coupon: /\b(coupon|coupons|coupon code|voucher|vouchers|promo code|referral code|cashback)\b/i,
+    compare: /\b(vs|versus|compare|comparison|which is better|best)\b/i,
+    review: /\b(review|reviews|rating|ratings|unboxing|hands on|pros and cons)\b/i,
+    specs: /\b(spec|specs|specification|specifications|features|camera|battery|ram|storage)\b/i,
+    availability: /\b(in stock|out of stock|availability|available|near me)\b/i,
+    delivery: /\b(delivery|shipping|ship|dispatch|same day|next day|return|refund|exchange|warranty)\b/i,
+    checkout: /\b(checkout|cart|bag|basket|payment|pay|upi|cod|cash on delivery)\b/i,
+  };
+
+  const TOPICS = {
+    electronics: /\b(iphone|android|mobile|smartphone|laptop|macbook|tablet|ipad|earbuds|headphone|airpods|camera|tv|monitor|gpu|nvidia|amd)\b/i,
+    fashion: /\b(shoes|sneaker|sneakers|shirt|t shirt|t-shirt|jeans|dress|kurta|saree|fashion|outfit|hoodie|jacket|watch|bag|handbag)\b/i,
+    beauty: /\b(skincare|skin care|serum|vitamin c|sunscreen|moisturizer|makeup|lipstick|perfume|fragrance|shampoo)\b/i,
+    food_delivery: /\b(swiggy|zomato|food|restaurant|order food|pizza|burger|biryan[iy]|grocery|blinkit|zepto)\b/i,
+    travel: /\b(flight|hotel|booking|airbnb|train|irctc|trip|tour|visa)\b/i,
+    finance: /\b(loan|emi|sip|mutual fund|insurance|credit card|bank|interest rate)\b/i,
+    real_estate: /\b(bhk|flat|apartment|villa|plot|property|rent|sale)\b/i,
+    jobs: /\b(job|jobs|hiring|recruit|resume|cv|salary)\b/i,
+  };
+
+  const keywordHits = {};
+  for (const [k, re] of Object.entries(HITS)) {
+    keywordHits[k] = cleaned.reduce((n, q) => n + (re.test(q) ? 1 : 0), 0);
+  }
+  const reasons = Object.entries(keywordHits)
+    .filter(([, c]) => c > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k]) => k);
+
+  const topics = Object.entries(TOPICS)
+    .filter(([, re]) => cleaned.some((q) => re.test(q)))
+    .map(([k]) => k);
+
+  const score =
+    keywordHits.checkout * 3 +
+    keywordHits.price * 2 +
+    keywordHits.deal * 2 +
+    keywordHits.coupon * 2 +
+    keywordHits.delivery * 1 +
+    keywordHits.compare * 1 +
+    keywordHits.review * 1 +
+    keywordHits.availability * 1 +
+    keywordHits.specs * 1;
+
+  const level = score >= 8 ? "high" : score >= 3 ? "medium" : reasons.length ? "low" : "none";
+
+  return {
+    intent_level: level,
+    intent_reasons: reasons.length ? reasons.slice(0, 6) : null,
+    intent_topics: topics.length ? topics.slice(0, 6) : null,
+    intent_keyword_hits: reasons.length ? keywordHits : null,
+  };
+}
+
+function inferQueryInsights(queries, prefix) {
+  const p = String(prefix || "").trim();
+  const base = inferQueryInsightsBase(queries);
+  if (!p) return base;
+  return {
+    [`${p}_query_intent_level`]: base.intent_level,
+    [`${p}_query_intent_reasons`]: base.intent_reasons,
+    [`${p}_query_topics`]: base.intent_topics,
+    [`${p}_query_keyword_hits`]: base.intent_keyword_hits,
+  };
+}
+
 const VALID_CATEGORIES = [
   "shopping", "social", "news", "finance", "entertainment",
   "education", "health", "travel", "technology", "food",
@@ -968,12 +1052,24 @@ function getPackagesPayload() {
       const sessions = userSessions[uid] || {};
       let totalCatSeconds = {};
       let hasLateNight = false;
+      let hasLateNightCommerce = false;
 
       for (const day of Object.values(sessions)) {
         for (const s of Object.values(day)) {
           const cat = s.category || "other";
           totalCatSeconds[cat] = (totalCatSeconds[cat] || 0) + (s.totalSeconds || 0);
-          if (s.visitHours?.some(h => h >= 22 || h <= 2)) hasLateNight = true;
+          const isLate = s.visitHours?.some(h => h >= 22 || h <= 2);
+          if (isLate) {
+            hasLateNight = true;
+            const pts = Array.isArray(s.pageTypes) ? s.pageTypes : [];
+            const hasPrices = Array.isArray(s.pricesFound) && s.pricesFound.length > 0;
+            const commerce =
+              cat === "shopping" ||
+              pts.includes("checkout") ||
+              (pts.includes("product") && hasPrices) ||
+              ((s.intent_score ?? 0) >= 7);
+            if (commerce) hasLateNightCommerce = true;
+          }
         }
       }
 
@@ -991,7 +1087,7 @@ function getPackagesPayload() {
         case "real_estate_prospects":
           return (totalCatSeconds.realestate || 0) > 0;
         case "night_owl_impulse_buyers":
-          return hasLateNight && (totalCatSeconds.shopping || 0) > 0;
+          return hasLateNight && hasLateNightCommerce;
         default:
           return false;
       }
@@ -1020,6 +1116,7 @@ function getPackagesPayload() {
       dataFields: [
         "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "intent_score", "top_brands", "search_queries",
+        "shopping_query_intent_level", "shopping_query_intent_reasons", "shopping_query_topics", "shopping_query_keyword_hits",
         "prices_viewed", "breadcrumbs", "page_types", "scroll_depth",
         "visit_frequency", "age_range", "gender", "occupation", "city", "region", "country", "device"
       ],
@@ -1085,6 +1182,7 @@ function getPackagesPayload() {
         "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "category_distribution_pct", "top_other_domains",
         "top_brands", "all_search_queries", "peak_hour", "device", "avg_scroll_depth",
+        "cross_platform_query_intent_level", "cross_platform_query_intent_reasons", "cross_platform_query_topics", "cross_platform_query_keyword_hits",
         "total_browsing_hours", "age_range", "gender", "occupation", "city", "region", "country"
       ],
       sampleData: [
@@ -1152,6 +1250,7 @@ function getPackagesPayload() {
       dataFields: [
         "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "finance_platforms_visited", "search_queries", "intent_score",
+        "finance_query_intent_level", "finance_query_intent_reasons", "finance_query_topics", "finance_query_keyword_hits",
         "visit_frequency", "age_range", "gender", "occupation", "city", "region", "country", "device"
       ],
       sampleData: [
@@ -1210,6 +1309,7 @@ function getPackagesPayload() {
       dataFields: [
         "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "tech_tools_used", "ai_tools_used", "search_queries",
+        "tech_query_intent_level", "tech_query_intent_reasons", "tech_query_topics", "tech_query_keyword_hits",
         "dev_platforms_visited", "tech_browsing_hours", "device", "age_range",
         "gender", "occupation", "city", "region", "country"
       ],
@@ -1275,6 +1375,7 @@ function getPackagesPayload() {
       dataFields: [
         "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "property_platforms_visited", "search_queries", "property_types",
+        "property_query_intent_level", "property_query_intent_reasons", "property_query_topics", "property_query_keyword_hits",
         "locations_searched", "intent_score", "visit_frequency", "age_range",
         "gender", "occupation", "city", "region", "country", "device"
       ],
@@ -1323,20 +1424,23 @@ function getPackagesPayload() {
       tier: 1,
       name: "Night Owl Impulse Buyers",
       tagline: "Late-night mobile shoppers — highest impulse purchase rate",
-      description: "Users who browse shopping and entertainment sites between 10pm–2am on mobile devices. Includes audience segments from both internal rollups and IAB Content Taxonomy topic time.",
+      description: "Users who show late-night commerce intent (shopping domains, product/checkout behavior, prices seen, or high intent scores) between 10pm–2am. Includes audience segments from both internal rollups and IAB Content Taxonomy topic time.",
       strongNow: true,
       strongerAfterOnboarding: false,
       signals: [
-        "Shopping/entertainment browsing between 10pm–2am",
-        "Mobile device dominant",
-        "Product pages visited after midnight",
+        "Late-night commerce intent between 10pm–2am",
+        "Shopping domains and product/checkout behavior",
+        "Prices seen or high intent scores (7+)",
         "Impulse categories: fashion, electronics, food delivery, OTT",
         "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
         "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "peak_shopping_hours", "device", "late_night_categories",
-        "late_night_brands", "late_night_search_queries", "avg_session_duration_night_seconds",
+        "late_night_brands", "late_night_search_queries",
+        "late_night_query_intent_level", "late_night_query_intent_reasons", "late_night_query_topics",
+        "late_night_query_keyword_hits",
+        "avg_session_duration_night_seconds",
         "age_range", "gender", "occupation", "city", "region", "country"
       ],
       sampleData: [
@@ -1349,6 +1453,10 @@ function getPackagesPayload() {
           device: "mobile", late_night_categories: ["shopping", "entertainment", "food"],
           late_night_brands: ["Myntra", "Swiggy", "Netflix"],
           late_night_search_queries: ["myntra sale tonight", "swiggy promo code"],
+          late_night_query_intent_level: "high",
+          late_night_query_intent_reasons: ["deal", "coupon", "delivery"],
+          late_night_query_topics: ["fashion", "food_delivery"],
+          late_night_query_keyword_hits: { deal: 1, coupon: 1, delivery: 1 },
           avg_session_duration_night_seconds: 1240,
           age_range: "18-24", gender: "F", occupation: "Student", city: "Delhi"
         },
@@ -1361,6 +1469,10 @@ function getPackagesPayload() {
           device: "mobile", late_night_categories: ["shopping", "technology"],
           late_night_brands: ["Amazon", "Flipkart", "YouTube"],
           late_night_search_queries: ["amazon flash sale tonight", "budget gaming laptop"],
+          late_night_query_intent_level: "medium",
+          late_night_query_intent_reasons: ["deal", "price", "compare"],
+          late_night_query_topics: ["electronics"],
+          late_night_query_keyword_hits: { deal: 1, price: 1, compare: 1 },
           avg_session_duration_night_seconds: 980,
           age_range: "18-24", gender: "M", occupation: "Student", city: "Pune"
         },
@@ -1373,6 +1485,10 @@ function getPackagesPayload() {
           device: "mobile", late_night_categories: ["food", "shopping", "social"],
           late_night_brands: ["Zomato", "Meesho", "Instagram"],
           late_night_search_queries: ["zomato midnight delivery", "meesho sale dresses"],
+          late_night_query_intent_level: "high",
+          late_night_query_intent_reasons: ["delivery", "deal"],
+          late_night_query_topics: ["food_delivery", "fashion"],
+          late_night_query_keyword_hits: { delivery: 1, deal: 1 },
           avg_session_duration_night_seconds: 1520,
           age_range: "22-30", gender: "F", occupation: "Working Professional", city: "Hyderabad"
         }
@@ -1458,11 +1574,18 @@ async function buildPackageRows(packageId, opts = {}) {
         const maxIntent = Math.max(...shoppingSessions.map(s => s.intent_score));
         const prices = normalizePricesFound(shoppingSessions.flatMap(s => s.pricesFound || [])).slice(0, 5);
         const breadcrumbs = shoppingSessions.find(s => s.breadcrumbs?.length)?.breadcrumbs || [];
+        const qList = [...new Set(allSearchQueries)].slice(0, 10);
+        const qInsights = inferQueryInsights(qList, "shopping");
         rows.push({
           user_id: uidOut, ...visitMeta,
           ...segCols,
           intent_score: maxIntent, top_brands: topBrands,
-          search_queries: [...new Set(allSearchQueries)].slice(0, 10),
+          search_queries: qList,
+          ...qInsights,
+          shopping_query_intent_level: qInsights.shopping_query_intent_level ?? null,
+          shopping_query_intent_reasons: qInsights.shopping_query_intent_reasons ?? null,
+          shopping_query_topics: qInsights.shopping_query_topics ?? null,
+          shopping_query_keyword_hits: qInsights.shopping_query_keyword_hits ?? null,
           prices_viewed: prices, breadcrumbs,
           page_types: [...new Set(shoppingSessions.flatMap(s => s.pageTypes || []))],
           scroll_depth: maxScrollDepth,
@@ -1482,13 +1605,20 @@ async function buildPackageRows(packageId, opts = {}) {
         const hourCounts = {};
         visitHours.forEach(h => { hourCounts[h] = (hourCounts[h] || 0) + 1; });
         const peakHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+        const allQ = [...new Set(allSearchQueries)].slice(0, 20);
+        const qInsights = inferQueryInsights(allQ, "cross_platform");
         rows.push({
           user_id: uidOut, ...visitMeta,
           ...segCols,
           category_distribution_pct: catDist,
           ...(otherHosts.length ? { top_other_domains: otherHosts } : {}),
           top_brands: topBrands,
-          all_search_queries: [...new Set(allSearchQueries)].slice(0, 20),
+          all_search_queries: allQ,
+          ...qInsights,
+          cross_platform_query_intent_level: qInsights.cross_platform_query_intent_level ?? null,
+          cross_platform_query_intent_reasons: qInsights.cross_platform_query_intent_reasons ?? null,
+          cross_platform_query_topics: qInsights.cross_platform_query_topics ?? null,
+          cross_platform_query_keyword_hits: qInsights.cross_platform_query_keyword_hits ?? null,
           peak_hour: peakHour ? parseInt(peakHour) : null,
           device: deviceType, avg_scroll_depth: maxScrollDepth,
           total_browsing_hours: parseFloat(totalHours),
@@ -1505,11 +1635,18 @@ async function buildPackageRows(packageId, opts = {}) {
         const finIntent = Object.values(sessions).flatMap(d =>
           Object.values(d).filter(s => s.category === "finance").map(s => s.intent_score || 3)
         );
+        const qList = finQueries.slice(0, 10);
+        const qInsights = inferQueryInsights(qList, "finance");
         rows.push({
           user_id: uidOut, ...visitMeta,
           ...segCols,
           finance_platforms_visited: [...new Set(finDomains)].slice(0, 5),
-          search_queries: finQueries.slice(0, 10),
+          search_queries: qList,
+          ...qInsights,
+          finance_query_intent_level: qInsights.finance_query_intent_level ?? null,
+          finance_query_intent_reasons: qInsights.finance_query_intent_reasons ?? null,
+          finance_query_topics: qInsights.finance_query_topics ?? null,
+          finance_query_keyword_hits: qInsights.finance_query_keyword_hits ?? null,
           intent_score: finIntent.length ? Math.max(...finIntent) : 3,
           visit_frequency: Object.values(sessions).flatMap(d =>
             Object.values(d).filter(s => s.category === "finance")
@@ -1523,12 +1660,19 @@ async function buildPackageRows(packageId, opts = {}) {
         const techDomains = allDomains.technology || [];
         const aiTools = techDomains.filter(d => ["claude.ai", "openai.com", "midjourney.com", "perplexity.ai"].includes(d));
         const devPlatforms = techDomains.filter(d => ["github.com", "stackoverflow.com", "vercel.com", "netlify.com", "leetcode.com"].includes(d));
+        const qList = allSearchQueries.slice(0, 10);
+        const qInsights = inferQueryInsights(qList, "tech");
         rows.push({
           user_id: uidOut, ...visitMeta,
           ...segCols,
           tech_tools_used: [...new Set(techDomains)].slice(0, 8),
           ai_tools_used: [...new Set(aiTools)],
-          search_queries: allSearchQueries.slice(0, 10),
+          search_queries: qList,
+          ...qInsights,
+          tech_query_intent_level: qInsights.tech_query_intent_level ?? null,
+          tech_query_intent_reasons: qInsights.tech_query_intent_reasons ?? null,
+          tech_query_topics: qInsights.tech_query_topics ?? null,
+          tech_query_keyword_hits: qInsights.tech_query_keyword_hits ?? null,
           dev_platforms_visited: [...new Set(devPlatforms)],
           tech_browsing_hours: parseFloat((totalCatSeconds.technology / 3600).toFixed(1)),
           device: deviceType, ...dem
@@ -1544,11 +1688,18 @@ async function buildPackageRows(packageId, opts = {}) {
         const reQueries = allSearchQueries.filter(q =>
           /bhk|flat|apartment|villa|plot|rent|sale|property/i.test(q)
         );
+        const qList = reQueries.slice(0, 10);
+        const qInsights = inferQueryInsights(qList, "property");
         rows.push({
           user_id: uidOut, ...visitMeta,
           ...segCols,
           property_platforms_visited: [...new Set(reDomains)].slice(0, 5),
-          search_queries: reQueries.slice(0, 10),
+          search_queries: qList,
+          ...qInsights,
+          property_query_intent_level: qInsights.property_query_intent_level ?? null,
+          property_query_intent_reasons: qInsights.property_query_intent_reasons ?? null,
+          property_query_topics: qInsights.property_query_topics ?? null,
+          property_query_keyword_hits: qInsights.property_query_keyword_hits ?? null,
           property_types: [...new Set(reSessions.map(s => s.property_type).filter(Boolean))],
           locations_searched: [...new Set(reSessions.map(s => s.location).filter(Boolean))],
           intent_score: Math.max(...reSessions.map(s => s.intent_score || 3)),
@@ -1558,24 +1709,48 @@ async function buildPackageRows(packageId, opts = {}) {
         break;
       }
       case "night_owl_impulse_buyers": {
-        if (!lateNightHours.length || !(totalCatSeconds.shopping > 0)) continue;
+        if (!lateNightHours.length) continue;
         const nightSessions = Object.values(sessions).flatMap(d =>
-          Object.values(d).filter(s =>
-            s.visitHours?.some(h => h >= 22 || h <= 2) &&
-            ["shopping", "entertainment", "food", "social"].includes(s.category)
-          )
+          Object.values(d).filter(s => s.visitHours?.some(h => h >= 22 || h <= 2))
         );
         if (!nightSessions.length) continue;
+
+        const commerceSessions = nightSessions.filter((s) => {
+          const cat = s.category || "other";
+          const pts = Array.isArray(s.pageTypes) ? s.pageTypes : [];
+          const hasPrices = Array.isArray(s.pricesFound) && s.pricesFound.length > 0;
+          return (
+            cat === "shopping" ||
+            pts.includes("checkout") ||
+            (pts.includes("product") && hasPrices) ||
+            ((s.intent_score ?? 0) >= 7)
+          );
+        });
+        if (!commerceSessions.length) continue;
+
+        const commerceHours = commerceSessions.flatMap(s => (Array.isArray(s.visitHours) ? s.visitHours : [])).filter(h => h >= 22 || h <= 2);
+        const hasPricesSeen = commerceSessions.some(s => Array.isArray(s.pricesFound) && s.pricesFound.length > 0);
+        const hasCheckout = commerceSessions.some(s => Array.isArray(s.pageTypes) && s.pageTypes.includes("checkout"));
+        const purchaseQueryRe = /\b(buy|price|deal|discount|coupon|sale|offer|best|under|cheap|review|vs|compare|specs?|shipping|delivery)\b/i;
+        const commerceQueries = [...new Set(commerceSessions.flatMap(s => Array.isArray(s.searchQueries) ? s.searchQueries : []))]
+          .map(q => String(q || "").trim())
+          .filter(q => q && purchaseQueryRe.test(q))
+          .slice(0, 12);
+        if (!commerceQueries.length && !hasPricesSeen && !hasCheckout) continue;
+
+        const queryInsights = inferQueryInsights(commerceQueries, "late_night");
+
         rows.push({
           user_id: uidOut, ...visitMeta,
           ...segCols,
-          peak_shopping_hours: lateNightHours.map(h => `${h}:00`),
+          peak_shopping_hours: (commerceHours.length ? commerceHours : lateNightHours).map(h => `${h}:00`),
           device: deviceType,
-          late_night_categories: [...new Set(nightSessions.map(s => s.category))],
-          late_night_brands: [...new Set(nightSessions.map(s => s.brand).filter(Boolean))].slice(0, 5),
-          late_night_search_queries: allSearchQueries.slice(0, 8),
+          late_night_categories: [...new Set(commerceSessions.map(s => s.category).filter(Boolean))],
+          late_night_brands: [...new Set(commerceSessions.map(s => s.brand).filter(Boolean))].slice(0, 5),
+          late_night_search_queries: commerceQueries.length ? commerceQueries : null,
+          ...queryInsights,
           avg_session_duration_night_seconds: Math.round(
-            nightSessions.reduce((a, s) => a + (s.totalSeconds || 0), 0) / (nightSessions.length || 1)
+            commerceSessions.reduce((a, s) => a + (s.totalSeconds || 0), 0) / (commerceSessions.length || 1)
           ),
           ...dem
         });
@@ -1629,14 +1804,34 @@ const CUSTOM_CATEGORY_EXPORT_COLUMNS = {
     "iab_content_primary_weight_seconds",
     "iab_content_affinity_top",
   ],
-  purchase_intent: ["max_intent_score", "intent_by_vertical", "price_ranges_viewed", "intent_search_queries"],
+  purchase_intent: [
+    "max_intent_score",
+    "intent_by_vertical",
+    "price_ranges_viewed",
+    "intent_search_queries",
+    "intent_query_intent_level",
+    "intent_query_intent_reasons",
+    "intent_query_topics",
+    "intent_query_keyword_hits",
+  ],
   brand_affinity: ["top_brands_researched", "premium_brands", "premium_brand_flag", "brand_cross_site_visits"],
-  content_signals: ["page_types", "search_queries", "max_scroll_depth", "breadcrumbs", "keywords"],
+  content_signals: [
+    "page_types",
+    "search_queries",
+    "content_query_intent_level",
+    "content_query_intent_reasons",
+    "content_query_topics",
+    "content_query_keyword_hits",
+    "max_scroll_depth",
+    "breadcrumbs",
+    "keywords",
+  ],
   temporal_patterns: ["peak_hour", "is_night_owl", "late_night_hours", "hour_distribution", "active_days"],
   ecommerce_signals: ["shopping_domains", "prices_found", "checkout_visits", "product_page_visits", "shopping_brands"],
   finance_signals: [
     "finance_browsing_hours", "finance_intent_level", "finance_decision_maker", "finance_domains_visited",
     "finance_search_queries", "max_finance_intent_score",
+    "finance_query_intent_level", "finance_query_intent_reasons", "finance_query_topics", "finance_query_keyword_hits",
   ],
   tech_affinity: [
     "tech_browsing_hours", "tech_early_adopter", "tech_domains_visited", "ai_tools_used",
@@ -1908,11 +2103,14 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
         }
       }
       if (maxIntent !== null || Object.keys(intentByVertical).length) {
+        const qList = [...new Set(allSearchQueries)].slice(0, 10);
+        const qInsights = inferQueryInsights(qList, "intent");
         Object.assign(row, {
           max_intent_score: maxIntent,
           intent_by_vertical: intentByVertical,
           price_ranges_viewed: normalizePricesFound(allPricesFound).slice(0, 8),
-          intent_search_queries: [...new Set(allSearchQueries)].slice(0, 10),
+          intent_search_queries: qList,
+          ...qInsights,
         });
         hasAnyData = true;
       }
@@ -1935,9 +2133,12 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
 
     if (catSet.has("content_signals")) {
       if (allPageTypes.length || allSearchQueries.length || allBreadcrumbs.length) {
+        const qList = [...new Set(allSearchQueries)].slice(0, 15);
+        const qInsights = inferQueryInsights(qList, "content");
         Object.assign(row, {
           page_types: [...new Set(allPageTypes)],
-          search_queries: [...new Set(allSearchQueries)].slice(0, 15),
+          search_queries: qList,
+          ...qInsights,
           max_scroll_depth: maxScrollDepth,
           breadcrumbs: [...new Set(allBreadcrumbs)].slice(0, 10),
           keywords: [...new Set(allKeywords)].slice(0, 20),
@@ -1982,6 +2183,8 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
         const finQueries = allSearchQueries.filter(q =>
           /loan|mutual|sip|insurance|emi|invest|fund|bank|credit|demat|nifty|sensex/i.test(q)
         );
+        const qList = finQueries.slice(0, 10);
+        const qInsights = inferQueryInsights(qList, "finance");
         const finIntents = Object.values(sessions).flatMap(d =>
           Object.values(d).filter(s => s.category === "finance").map(s => s.intent_score || 3)
         );
@@ -1990,7 +2193,8 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
           finance_intent_level: finSec > 1800 ? "high" : finSec > 900 ? "medium" : "low",
           finance_decision_maker: finSec > 900,
           finance_domains_visited: [...new Set(finDomains)].slice(0, 6),
-          finance_search_queries: finQueries.slice(0, 10),
+          finance_search_queries: qList,
+          ...qInsights,
           max_finance_intent_score: finIntents.length ? Math.max(...finIntents) : null,
         });
         hasAnyData = true;

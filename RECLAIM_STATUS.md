@@ -309,6 +309,17 @@ Exports include:
 - **`/api/sync`** can persist **`visitLog`** segments → **`visit_segments_30d`** on company exports when the extension sends them.
 - Shared **`buildPackageRows`** / **`buildCustomPackageRows`** for CSV/JSON downloads with pseudonymous `user_id` scoping per company.
 
+### 11. Query-derived export helpers ✅
+Some packages and custom modules export raw `*_search_queries`. In addition, exports include keyword-derived helper fields so buyers can filter/aggregate without parsing the raw strings:
+
+- **Intent level**: `<prefix>_query_intent_level` (`none|low|medium|high`)
+- **Reasons** (keyword buckets): `<prefix>_query_intent_reasons` (e.g. `price`, `deal`, `coupon`, `compare`, `review`, `checkout`, `delivery`)
+- **Topics** (coarse): `<prefix>_query_topics` (e.g. `electronics`, `fashion`, `food_delivery`, `finance`, `real_estate`)
+- **Counts**: `<prefix>_query_keyword_hits`
+
+### 12. Curated package quality guardrails ✅
+- **Night Owl Impulse Buyers** now requires **late-night commerce intent** (shopping/product/checkout/prices/high intent) and only exports late-night commerce queries (not unrelated late-night browsing queries).
+
 ---
 
 ## What Has To Be Done (Priority Order)
@@ -327,6 +338,10 @@ Exports include:
 
 ### Priority 4 — AI suggestions (product roadmap)
 - **`POST /api/suggestions`** + surfaces in popup and dashboard insights
+
+### Future — Prompt-driven custom packages (not started)
+- Persist a canonical event log (JSONL/S3 or Postgres) and add a controlled “package spec” format.
+- Add an AI agent later to translate buyer prompts → package spec → exports, with strict allowlists and auditability.
 
 ### Priority 5 — Withdrawals / on-chain payouts
 - UI currently labels blockchain / withdraw as **coming soon**; implement when product/legal ready
