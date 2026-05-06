@@ -641,6 +641,17 @@ export default function CompanyDashboard() {
     transition: "all 0.15s ease",
   });
 
+  const guestShell = companyAuthLoading || !companyMe;
+  const homeLinkStyle = {
+    fontFamily: "DM Mono, monospace",
+    fontSize: 11,
+    color: "#666",
+    textDecoration: "none",
+    padding: "8px 4px",
+    borderRadius: 6,
+    transition: "color 0.15s ease",
+  };
+
   return (
     <div style={styles.app}>
       <aside style={styles.sidebar}>
@@ -662,7 +673,25 @@ export default function CompanyDashboard() {
               </div>
             </div>
           ) : (
-            <div style={{ fontSize: 11, color: "#666", fontFamily: "DM Mono, monospace" }}>Not logged in</div>
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: "#00e5a0",
+                    opacity: 0.85,
+                    boxShadow: "0 0 8px rgba(0,229,160,0.35)",
+                    animation: "pulse 2s ease-in-out infinite",
+                  }}
+                />
+                <span style={{ fontSize: 11, color: "#888", fontFamily: "DM Mono, monospace" }}>Awaiting sign-in</span>
+              </div>
+              <div style={{ fontSize: 10, color: "#555", fontFamily: "DM Mono, monospace", lineHeight: 1.5 }}>
+                Google OAuth for buyers
+              </div>
+            </div>
           )}
         </div>
         <div style={styles.sidebarFooter}>
@@ -671,8 +700,24 @@ export default function CompanyDashboard() {
         </div>
       </aside>
 
-      <main style={styles.main}>
-        <div style={{ ...styles.header, marginBottom: 20, paddingBottom: 20 }}>
+      <main
+        style={{
+          ...styles.main,
+          ...(guestShell
+            ? { display: "flex", flexDirection: "column", minHeight: "100vh", paddingTop: 28 }
+            : {}),
+        }}
+      >
+        <div
+          style={{
+            ...styles.header,
+            marginBottom: guestShell ? 16 : 20,
+            paddingTop: guestShell ? 4 : 0,
+            paddingRight: guestShell ? 12 : 0,
+            paddingBottom: 20,
+            flexShrink: 0,
+          }}
+        >
           <div>
             <div style={styles.pageTitle}>Company dashboard</div>
           </div>
@@ -681,34 +726,88 @@ export default function CompanyDashboard() {
               Logout
             </button>
           ) : (
-            <button type="button" style={styles.connectBtn} onClick={startCompanyGoogleOAuth}>
-              Continue with Google
-            </button>
+            <a href="/" style={homeLinkStyle} onMouseEnter={(e) => { e.currentTarget.style.color = "#00e5a0"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "#666"; }}>
+              Back to home →
+            </a>
           )}
         </div>
 
-        {companyError && (
-          <div style={{ ...styles.card, borderColor: "#ff4d4d55", background: "#ff4d4d10", marginBottom: 16 }}>
-            <div style={{ fontFamily: "DM Mono, monospace", fontSize: 12, color: "#ff9f9f" }}>{companyError}</div>
-          </div>
-        )}
-
-        {companyAuthLoading ? (
-          <div style={styles.card}>
-            <div style={styles.cardLabel}>Authenticating</div>
-            <div style={styles.insightLoading}>checking session...</div>
-          </div>
-        ) : !companyMe ? (
-          <div style={styles.card}>
-            <div style={styles.cardLabel}>Login required</div>
-            <div style={{ color: "#666", fontFamily: "DM Mono, monospace", fontSize: 13, lineHeight: 1.6 }}>
-              Sign in with your company Google account to continue.
+        <div
+          style={
+            guestShell
+              ? {
+                  flex: 1,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "0 16px 56px",
+                  minHeight: 0,
+                }
+              : undefined
+          }
+        >
+          {companyError && (
+            <div
+              style={{
+                ...styles.card,
+                borderColor: "#ff4d4d55",
+                background: "#ff4d4d10",
+                marginBottom: 16,
+                maxWidth: 440,
+                width: "100%",
+              }}
+            >
+              <div style={{ fontFamily: "DM Mono, monospace", fontSize: 12, color: "#ff9f9f" }}>{companyError}</div>
             </div>
-            <button type="button" style={{ ...styles.connectBtn, marginTop: 16 }} onClick={startCompanyGoogleOAuth}>
-              Continue with Google
-            </button>
-          </div>
-        ) : (
+          )}
+
+          {companyAuthLoading ? (
+            <div style={{ ...styles.card, maxWidth: 440, width: "100%" }}>
+              <div style={styles.cardLabel}>Authenticating</div>
+              <div style={styles.insightLoading}>checking session...</div>
+            </div>
+          ) : !companyMe ? (
+            <div style={{ ...styles.card, maxWidth: 440, width: "100%", boxSizing: "border-box" }}>
+              <div style={styles.cardLabel}>Login required</div>
+              <h2
+                style={{
+                  fontFamily: "Syne, sans-serif",
+                  fontSize: 22,
+                  fontWeight: 800,
+                  letterSpacing: "-0.03em",
+                  color: "#f0f0f0",
+                  margin: "0 0 10px",
+                  lineHeight: 1.2,
+                }}
+              >
+                Sign in to Reclaim Business
+              </h2>
+              <div style={{ color: "#8a8a8a", fontFamily: "DM Mono, monospace", fontSize: 13, lineHeight: 1.65 }}>
+                Use your company Google account. You’ll be redirected to Google, then back here to browse audience exports.
+              </div>
+              <button type="button" style={{ ...styles.connectBtn, marginTop: 20, width: "100%", padding: "12px 16px", fontSize: 12 }} onClick={startCompanyGoogleOAuth}>
+                Continue with Google
+              </button>
+              <a
+                href="/"
+                style={{
+                  display: "block",
+                  marginTop: 18,
+                  textAlign: "center",
+                  fontFamily: "DM Mono, monospace",
+                  fontSize: 11,
+                  color: "#555",
+                  textDecoration: "none",
+                }}
+              >
+                ← Consumer site / home
+              </a>
+            </div>
+          ) : null}
+        </div>
+
+        {!guestShell && (
           <div style={styles.grid}>
             <div
               style={{
