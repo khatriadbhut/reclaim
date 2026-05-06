@@ -83,9 +83,53 @@
     .consent-text { font-size: 13px; color: var(--text); line-height: 1.5; }
     .consent-text .dim { color: var(--muted); font-family: 'DM Mono', monospace; font-size: 12px; }
     .highlight-block { background: var(--accent-dim); border: 1px solid #00e5a025; border-radius: 10px; padding: 16px 20px; margin-bottom: 28px; font-size: 13px; color: #c0fff0; font-family: 'DM Mono', monospace; line-height: 1.6; }
-    .terms-link { font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; margin-bottom: 20px; display: block; line-height: 1.6; }
-    .terms-link a { color: var(--accent); text-decoration: none; border-radius: 4px; }
-    .terms-link a:hover { text-decoration: underline; }
+
+    .terms-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 18px 16px;
+      margin-bottom: 20px;
+      box-shadow: 0 0 0 1px rgba(0,229,160,0.04);
+    }
+    .terms-card-label {
+      font-family: 'Syne', sans-serif;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #888;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+    .terms-card-lead {
+      font-family: 'Syne', sans-serif;
+      font-size: 14px;
+      font-weight: 500;
+      color: #c8c8c8;
+      line-height: 1.55;
+      margin: 0 0 8px;
+    }
+    .terms-card-lead a {
+      color: var(--accent);
+      font-weight: 700;
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+      text-decoration-color: rgba(0, 229, 160, 0.45);
+      border-radius: 2px;
+    }
+    .terms-card-lead a:hover {
+      text-decoration-color: var(--accent);
+      color: #33ffc0;
+    }
+    .terms-card-note {
+      font-family: 'Syne', sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      color: #5a5a5a;
+      line-height: 1.45;
+      margin: 0;
+    }
 
     /* ── Sign-in ── */
     .google-btn { width: 100%; padding: 14px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 15px; font-family: 'Syne', sans-serif; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 12px; transition: all 0.2s; margin-bottom: 12px; }
@@ -235,7 +279,11 @@
       <div class="consent-item"><div class="consent-dot"></div><div class="consent-text">Your real name, email, and raw IP are never sold — buyers only get anonymized segments, not your identity<div class="dim">we store Google name &amp; email for your account and payouts only</div></div></div>
     </div>
     <div class="highlight-block">Meta, Google, and Instagram do all of the above — silently, without paying you a cent. Reclaim shows you exactly what's collected and gives you a cut of every sale.</div>
-    <span class="terms-link">By continuing you agree to our <a id="legal-terms-link" href="about:blank" target="_blank" rel="noopener noreferrer">Terms of Service</a> and <a id="legal-privacy-link" href="about:blank" target="_blank" rel="noopener noreferrer">Privacy Policy</a> (opens the Reclaim site).</span>
+    <div class="terms-card">
+      <div class="terms-card-label">Agreement</div>
+      <p class="terms-card-lead">By continuing, you agree to our <a id="legal-terms-link" href="about:blank" target="_blank" rel="noopener noreferrer">Terms of Service</a> and <a id="legal-privacy-link" href="about:blank" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.</p>
+      <p class="terms-card-note">Full documents open on the Reclaim website in a new tab.</p>
+    </div>
     <button type="button" class="btn btn-primary" id="agreeBtn">I Agree — Let's Go</button>
   </div>
 
