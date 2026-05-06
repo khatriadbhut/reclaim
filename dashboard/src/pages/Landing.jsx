@@ -400,19 +400,6 @@ const CSS = `
   }
   @media (max-width: 600px) {
     .rclSteps { grid-template-columns: 1fr; }
-    .rclConnector { display: none; }
-  }
-
-  .rclConnector {
-    position: absolute; top: 34px; height: 1px;
-  }
-  .rclConnector1 {
-    left: calc(33.33% - 6px); width: calc(33.33% + 12px);
-    background: linear-gradient(90deg, rgba(0,229,160,0.3), rgba(0,229,160,0.1));
-  }
-  .rclConnector2 {
-    left: calc(66.66% - 6px); width: calc(33.33%);
-    background: linear-gradient(90deg, rgba(0,229,160,0.1), rgba(77,159,255,0.3));
   }
 
   .rclStep {
@@ -657,8 +644,6 @@ export default function Landing() {
       <section className="rclHow" aria-label="How it works">
         <p className="rclSectionLabel">— how it works —</p>
         <div className="rclSteps">
-          <div className="rclConnector rclConnector1" aria-hidden="true" />
-          <div className="rclConnector rclConnector2" aria-hidden="true" />
           {STEPS.map((s, i) => (
             <div key={s.n} className="rclStep">
               <div className="rclStepNum">{s.n}</div>
