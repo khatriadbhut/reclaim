@@ -471,16 +471,19 @@ export default function CompanyDashboard() {
   const [companyError, setCompanyError] = useState("");
   const [activeTab, setActiveTab] = useState("fixed");
 
-  useEffect(() => {
-    bootstrapCompany();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  function clearCompanyAuthState() {
+    setCompanyMe(null);
+    setPackages([]);
+    setPurchases([]);
+    setCompanyError("");
+  }
 
-  // BFCache: Back from Google can restore a frozen /company tab with stale React state
-  // while cookies/session are already correct (or the opposite). Re-sync from the server.
   useEffect(() => {
-    function onPageShow(e) {
-      if (e.persisted) void bootstrapCompany();
+    void bootstrapCompany();
+    function onPageShow() {
+      // Every show (including BFCache + normal back/forward) re-syncs so UI never
+      // stays “logged in” while marketplace calls return 401.
+      void bootstrapCompany();
     }
     window.addEventListener("pageshow", onPageShow);
     return () => window.removeEventListener("pageshow", onPageShow);
@@ -493,17 +496,19 @@ export default function CompanyDashboard() {
     try {
       const res = await fetch(`${BACKEND}/api/company/auth/me`, { credentials: "include" });
       if (!res.ok) {
-        setCompanyMe(null);
-        setPackages([]);
-        setPurchases([]);
+        clearCompanyAuthState();
         setCompanyAuthLoading(false);
         return;
       }
       const me = await res.json();
       setCompanyMe(me);
-      setCompanyAuthLoading(false);
-      await loadCompanyPackages();
+      const packagesOk = await loadCompanyPackages();
+      if (!packagesOk) {
+        setCompanyAuthLoading(false);
+        return;
+      }
       await loadCompanyPurchases();
+      setCompanyAuthLoading(false);
     } catch (e) {
       setCompanyError(e?.message || "Failed to connect to backend.");
       setCompanyMe(null);
@@ -511,17 +516,32 @@ export default function CompanyDashboard() {
     }
   }
 
+  /** @returns {Promise<boolean>} false if auth lost (401) — caller should skip further authed calls */
   async function loadCompanyPackages() {
     setPackagesLoading(true);
     setCompanyError("");
     try {
       const res = await fetch(`${BACKEND}/api/company/packages`, { credentials: "include" });
-      if (!res.ok) throw new Error("Not authorized");
+      if (!res.ok) {
+        if (res.status === 401) clearCompanyAuthState();
+        else {
+          let msg = "Failed to load packages.";
+          try {
+            const j = await res.json();
+            if (j?.error) msg = j.error;
+          } catch { /* ignore */ }
+          setCompanyError(msg);
+        }
+        setPackages([]);
+        return false;
+      }
       const data = await res.json();
       setPackages(Array.isArray(data) ? data : []);
-    } catch (e) {
-      setCompanyError(e?.message || "Failed to load packages.");
+      return true;
+    } catch {
+      setCompanyError("Failed to load packages.");
       setPackages([]);
+      return false;
     } finally {
       setPackagesLoading(false);
     }
@@ -532,11 +552,23 @@ export default function CompanyDashboard() {
     setCompanyError("");
     try {
       const res = await fetch(`${BACKEND}/api/company/purchases`, { credentials: "include" });
-      if (!res.ok) throw new Error("Not authorized");
+      if (!res.ok) {
+        if (res.status === 401) clearCompanyAuthState();
+        else {
+          let msg = "Failed to load purchases.";
+          try {
+            const j = await res.json();
+            if (j?.error) msg = j.error;
+          } catch { /* ignore */ }
+          setCompanyError(msg);
+        }
+        setPurchases([]);
+        return;
+      }
       const data = await res.json();
       setPurchases(data.purchases || []);
-    } catch (e) {
-      setCompanyError(e?.message || "Failed to load purchases.");
+    } catch {
+      setCompanyError("Failed to load purchases.");
       setPurchases([]);
     } finally {
       setPurchasesLoading(false);
@@ -550,11 +582,10 @@ export default function CompanyDashboard() {
   }
 
   async function companyLogout() {
-    setCompanyError("");
     try {
       await fetch(`${BACKEND}/api/company/auth/logout`, { method: "POST", credentials: "include" });
     } catch { /* ignore */ }
-    setCompanyMe(null);
+    clearCompanyAuthState();
   }
 
   async function buyPackage(pkg) {
