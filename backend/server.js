@@ -289,6 +289,39 @@ function heuristicDomainRollup(domain, title, url) {
   // Do not categorize local/dev hosts here. The extension ignores them for earnings/sessions.
   if (d === "localhost" || d === "127.0.0.1" || d === "0.0.0.0" || d.endsWith(".local")) return null;
 
+  // Education domains can safely default to education.
+  const tLower = String(title || "").toLowerCase();
+  const uLower = String(url || "").toLowerCase();
+  const isEduDomain =
+    /\b(edu|ac)\b/.test(d.split(".").slice(-2, -1)[0] || "") ||
+    d.includes(".edu.") ||
+    d.includes(".ac.");
+  if (isEduDomain) return "education";
+
+  // Government domains are ambiguous (jobs, taxes, transport, portals, etc.).
+  // Only classify when there are strong keyword signals; otherwise leave as "other"
+  // and rely on vendor categories / visit evidence.
+  const isGovDomain =
+    d.includes(".gov.") ||
+    d.endsWith(".gov") ||
+    d.endsWith(".gov.in") ||
+    d.includes(".gov.in");
+  if (isGovDomain) {
+    const blob = `${tLower} ${uLower}`;
+    if (/\b(recruitment|vacanc(y|ies)|apply|employment|career|exam|admit card|result|selection|notification)\b/.test(blob)) {
+      return "jobs";
+    }
+    if (/\b(university|college|institute|research|lab|laboratory|science|engineering|training|course|learning|student|equipment|facility|facilities|booking|reservation)\b/.test(blob)) {
+      return "education";
+    }
+    if (/\b(tourism|travel|flight|railway|metro|bus|ticket|visa|passport)\b/.test(blob)) {
+      return "travel";
+    }
+    if (/\b(press|release|media|statement|gazette)\b/.test(blob)) {
+      return "news";
+    }
+  }
+
   const STOP = new Set([
     "www", "com", "net", "org", "co", "in", "io", "app", "dev",
     "the", "and", "for", "with", "from", "your", "you", "our", "us",
