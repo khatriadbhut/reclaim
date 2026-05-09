@@ -30,7 +30,8 @@
   const { protocol } = window.location;
   if (protocol !== "http:" && protocol !== "https:") return;
 
-  const KEYS = ["isLoggedIn", "sessions", "totalEarnings", "userId", "userName", "userEmail", "userPicture"];
+  // Never expose bearer tokens to the page context.
+  const KEYS = ["isLoggedIn", "sessions", "totalEarnings", "userId", "userName", "userEmail", "userPicture", "lastSyncAt", "lastSyncOk", "lastSyncError"];
 
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin) return;
@@ -43,7 +44,7 @@
       try {
         window.postMessage(
           { source: "reclaim-extension", type: "EXTENSION_STATE", requestId, ...body },
-          "*",
+          window.location.origin,
         );
       } catch {
         /* ignore */

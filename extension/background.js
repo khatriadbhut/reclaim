@@ -7,6 +7,11 @@
 // Syncs to backend every 5 minutes
 
 const BACKEND_URL = "http://localhost:3000";
+/**
+ * Origins allowed for `externally_connectable` / port bridges. Keep in sync with manifest.json
+ * `externally_connectable.matches` before publishing (add your production dashboard HTTPS origin).
+ */
+const ALLOWED_DASHBOARD_ORIGINS = new Set(["http://localhost:5173"]);
 const EXTRACT_CACHE_TTL = 1000 * 60 * 60 * 24;
 
 const FALLBACK_EARNINGS_RATE = {
@@ -34,6 +39,45 @@ const DASHBOARD_STORAGE_KEYS = [
   "lastSyncError",
 ];
 
+function isAllowedDashboardOrigin(origin) {
+  return Boolean(origin && ALLOWED_DASHBOARD_ORIGINS.has(origin));
+}
+
+function senderOrigin(sender) {
+  try {
+    const u = sender?.url ? new URL(sender.url) : null;
+    return u ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function allowExternalSenderOrReject(sender, sendResponse) {
+  const origin = senderOrigin(sender);
+  // In MV3 service worker wakeup scenarios, Chrome may omit sender.url/port.sender.
+  // We rely on manifest.json externally_connectable in dev to restrict origins.
+  if (!origin) return true;
+  if (!isAllowedDashboardOrigin(origin)) {
+    try {
+      sendResponse({ ok: false, error: "forbidden origin" });
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
+  return true;
+}
+
+async function getUserApiToken() {
+  const { userApiToken } = await chrome.storage.local.get(["userApiToken"]);
+  return typeof userApiToken === "string" && userApiToken.trim() ? userApiToken.trim() : null;
+}
+
+async function authHeaders() {
+  const token = await getUserApiToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 // Chrome's `externally_connectable` in manifest.json already enforces which origins
 // can send external messages, so a secondary URL check here is redundant.
 // Worse, in MV3 service worker wakeup scenarios sender.url can be unpopulated,
@@ -41,11 +85,41 @@ const DASHBOARD_STORAGE_KEYS = [
 
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
   if (!message || !message.type) return false;
+  if (!allowExternalSenderOrReject(sender, sendResponse)) return false;
   if (message.type === "RECLAIM_GET_STORAGE") {
     chrome.storage.local
       .get(DASHBOARD_STORAGE_KEYS)
       .then((result) => sendResponse(result || {}))
       .catch(() => sendResponse({}));
+    return true;
+  }
+  if (message.type === "RECLAIM_INSIGHT") {
+    (async () => {
+      try {
+        const summary = typeof message.summary === "string" ? message.summary : "";
+        if (!summary.trim()) {
+          sendResponse({ ok: false, error: "missing summary" });
+          return;
+        }
+        const ah = await authHeaders();
+        const { res, json, text } = await fetchJsonWithTimeout(
+          `${BACKEND_URL}/api/insight`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...ah },
+            body: JSON.stringify({ summary }),
+          },
+          15000
+        );
+        if (!res.ok) {
+          sendResponse({ ok: false, error: (json && json.error) || text || `insight failed (${res.status})` });
+          return;
+        }
+        sendResponse({ ok: true, insight: json?.insight || "", source: json?.source || null });
+      } catch (err) {
+        sendResponse({ ok: false, error: err?.message ? String(err.message) : "insight failed" });
+      }
+    })();
     return true;
   }
   if (message.type === "RECLAIM_SYNC_NOW") {
@@ -72,6 +146,12 @@ chrome.runtime.onConnectExternal.addListener((port) => {
     port.disconnect();
     return;
   }
+  const origin = senderOrigin(port.sender);
+  // See allowExternalSenderOrReject: port.sender may be missing in MV3 wakeups.
+  if (origin && !isAllowedDashboardOrigin(origin)) {
+    port.disconnect();
+    return;
+  }
   port.onMessage.addListener((msg) => {
     if (!msg || !msg.type) return;
     if (msg.type === "RECLAIM_GET_STORAGE") {
@@ -82,6 +162,48 @@ chrome.runtime.onConnectExternal.addListener((port) => {
           /* port may be gone */
         }
       });
+      return;
+    }
+    if (msg.type === "RECLAIM_INSIGHT") {
+      (async () => {
+        try {
+          const summary = typeof msg.summary === "string" ? msg.summary : "";
+          if (!summary.trim()) {
+            port.postMessage({ type: "RECLAIM_INSIGHT_RESULT", payload: { ok: false, error: "missing summary" } });
+            return;
+          }
+          const ah = await authHeaders();
+          const { res, json, text } = await fetchJsonWithTimeout(
+            `${BACKEND_URL}/api/insight`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json", ...ah },
+              body: JSON.stringify({ summary }),
+            },
+            15000
+          );
+          if (!res.ok) {
+            port.postMessage({
+              type: "RECLAIM_INSIGHT_RESULT",
+              payload: { ok: false, error: (json && json.error) || text || `insight failed (${res.status})` },
+            });
+            return;
+          }
+          port.postMessage({
+            type: "RECLAIM_INSIGHT_RESULT",
+            payload: { ok: true, insight: json?.insight || "", source: json?.source || null },
+          });
+        } catch (err) {
+          try {
+            port.postMessage({
+              type: "RECLAIM_INSIGHT_RESULT",
+              payload: { ok: false, error: err?.message ? String(err.message) : "insight failed" },
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      })();
       return;
     }
     if (msg.type === "RECLAIM_SYNC_NOW") {
@@ -124,11 +246,11 @@ async function resolveUserDashboardHref() {
   }
   try {
     const tabs = await chrome.tabs.query({
-      url: ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+      url: ["http://localhost:5173/*"],
     });
     for (const t of tabs) {
       const u = new URL(t.url || "");
-      if (u.port === "5173" && (u.hostname === "localhost" || u.hostname === "127.0.0.1")) {
+      if (u.port === "5173" && u.hostname === "localhost") {
         return `${u.origin}/user`;
       }
     }
@@ -145,7 +267,7 @@ async function openUserDashboardInBrowser() {
     try {
       const u = new URL(t.url || "");
       return (
-        (u.hostname === "localhost" || u.hostname === "127.0.0.1") &&
+        u.hostname === "localhost" &&
         u.port === "5173" &&
         u.pathname === "/user"
       );
@@ -213,6 +335,7 @@ async function signInWithGoogle(fromOnboardingPage = false, forceAccountPicker =
           userName: user.name,
           userEmail: user.email,
           userPicture: user.picture,
+          userApiToken: user.apiToken || null,
           accessToken: token,
           isLoggedIn: true,
           // Backend already has demographics — don’t block the popup until they re-click “Done” in onboarding.
@@ -351,8 +474,9 @@ async function extractData(domain, title) {
   const cached = await chrome.storage.local.get(cacheKey);
   if (cached[cacheKey] && cached[cacheKey].expiresAt > Date.now()) return cached[cacheKey].data;
   try {
+    const ah = await authHeaders();
     const res = await fetch(`${BACKEND_URL}/api/extract`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", ...ah },
       body: JSON.stringify({ domain, title })
     });
     if (!res.ok) throw new Error();
@@ -366,13 +490,18 @@ async function extractData(domain, title) {
 
 async function classifyVisitOnBackend({ url, title, domain, pageType, pageTypes, extracted, session }) {
   try {
+    const ah = await authHeaders();
     const res = await fetch(`${BACKEND_URL}/api/classify-visit`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...ah },
       body: JSON.stringify({
         url,
         title,
         domain,
+        seoText: typeof session?.seoText === "string" ? session.seoText.slice(0, 400) : null,
+        metaKeywords: typeof session?.metaKeywords === "string" ? session.metaKeywords.slice(0, 250) : null,
+        ogType: typeof session?.ogType === "string" ? session.ogType.slice(0, 60) : null,
+        schemaTypes: Array.isArray(session?.schemaTypes) ? session.schemaTypes.slice(0, 6) : null,
         pageType: pageType || null,
         pageTypes: Array.isArray(pageTypes) ? pageTypes : [],
         hasPrices: Array.isArray(session?.pricesFound) && session.pricesFound.length > 0,
@@ -416,6 +545,33 @@ async function refreshVisitClassification(url, title, domain, session, extracted
   session.iab_content_match_method = classified.iab_content_match_method ?? null;
 
   return classified;
+}
+
+/** After a fresh classify, align every stored day for this domain so old wrong labels disappear on next browse. */
+function propagateClassificationToAllDaysForDomain(sessions, domain, sourceSession) {
+  if (!sessions || !domain || !sourceSession) return;
+  for (const dk of Object.keys(sessions)) {
+    const day = sessions[dk];
+    if (!day || typeof day !== "object") continue;
+    const row = day[domain];
+    if (!row || row === sourceSession) continue;
+    row.packaged_category = sourceSession.packaged_category;
+    row.category = sourceSession.category;
+    row.category_merge = sourceSession.category_merge;
+    row.domain_rollup = sourceSession.domain_rollup;
+    row.iab_provider = sourceSession.iab_provider;
+    row.iab_taxonomy = sourceSession.iab_taxonomy;
+    row.iab_categories = sourceSession.iab_categories;
+    row.iab_primary_id = sourceSession.iab_primary_id;
+    row.iab_primary_name = sourceSession.iab_primary_name;
+    row.iab_primary_confidence = sourceSession.iab_primary_confidence;
+    row.iab_mapped = sourceSession.iab_mapped;
+    row.iab_content = sourceSession.iab_content;
+    row.iab_content_primary_id = sourceSession.iab_content_primary_id;
+    row.iab_content_primary_name = sourceSession.iab_content_primary_name;
+    row.iab_content_primary_confidence = sourceSession.iab_content_primary_confidence;
+    row.iab_content_match_method = sourceSession.iab_content_match_method;
+  }
 }
 
 async function saveSession(url, title, durationSeconds, contentData = {}) {
@@ -502,6 +658,7 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
   if (typeof contentData.visitHour === "number" && !session.visitHours.includes(contentData.visitHour)) session.visitHours.push(contentData.visitHour);
 
   const classified = await refreshVisitClassification(url, title, domain, session, extracted, contentData.pageType);
+  propagateClassificationToAllDaysForDomain(sessions, domain, session);
 
   let crossSiteBonus = 0;
   if (session.brand) {
@@ -525,10 +682,11 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
 async function syncToBackend() {
   const userId = await getUserId();
   const result = await chrome.storage.local.get(["sessions", "totalEarnings", "userLocation", "userProfile"]);
+  const ah = await authHeaders();
   const controller = new AbortController();
   const tid = setTimeout(() => controller.abort(), 15000);
   const res = await fetch(`${BACKEND_URL}/api/sync`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json", ...ah },
     signal: controller.signal,
     body: JSON.stringify({
       userId, sessions: result.sessions || {}, totalEarnings: result.totalEarnings || 0,
@@ -676,6 +834,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.deviceType) pending.deviceType = message.deviceType;
   if (message.timeOfDay) pending.timeOfDay = message.timeOfDay;
   if (typeof message.visitHour === "number") pending.visitHour = message.visitHour;
+  if (message.seoText && typeof message.seoText === "string") pending.seoText = message.seoText.slice(0, 400);
+  if (message.metaKeywords && typeof message.metaKeywords === "string") pending.metaKeywords = message.metaKeywords.slice(0, 250);
+  if (message.ogType && typeof message.ogType === "string") pending.ogType = message.ogType.slice(0, 60);
+  if (Array.isArray(message.schemaTypes) && message.schemaTypes.length) {
+    pending.schemaTypes = message.schemaTypes.map((x) => String(x || "").slice(0, 60)).filter(Boolean).slice(0, 6);
+  }
 });
 
 console.log("Reclaim background worker v4.2 started");

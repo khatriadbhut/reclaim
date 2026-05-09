@@ -1,5 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BACKEND, CATEGORY_COLORS, formatTime, getTodayKey, navIcons, styles } from "../ui/constants.js";
+
+/** Match backend `normDomain` / registry keys. */
+function normDomain(d) {
+  return String(d || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^www\./, "");
+}
 
 function isLocalDashboardHost() {
   if (typeof window === "undefined") return false;
@@ -192,14 +200,17 @@ function requestExtensionStateViaBridge() {
 
     const tid = setTimeout(() => done({ ok: false, payload: null }), timeoutMs);
     window.addEventListener("message", onMessage);
-    window.postMessage({ source: "reclaim-dashboard", type: "GET_EXTENSION_STATE", requestId }, "*");
+    window.postMessage(
+      { source: "reclaim-dashboard", type: "GET_EXTENSION_STATE", requestId },
+      window.location.origin
+    );
   });
 }
 
 export default function UserDashboard() {
   const [totalEarnings, setTotalEarnings] = useState(0);
   const [todayEarnings, setTodayEarnings] = useState(0);
-  const [categories, setCategories] = useState({});
+  const [registryRollups, setRegistryRollups] = useState({});
   const [sessions, setSessions] = useState({});
   const [insight, setInsight] = useState("");
   const [insightLoading, setInsightLoading] = useState(false);
@@ -295,19 +306,57 @@ export default function UserDashboard() {
     const todaySessions = sessionsData[todayKey] || {};
     const todayTotal = Object.values(todaySessions).reduce((s, x) => s + (x.earned || 0), 0);
     setTodayEarnings(todayTotal);
+  }
 
+  useEffect(() => {
+    let cancelled = false;
+    const domains = new Set();
+    for (const day of Object.values(sessions || {})) {
+      for (const s of Object.values(day || {})) {
+        if (s?.domain) domains.add(normDomain(s.domain));
+        if (domains.size >= 350) break;
+      }
+      if (domains.size >= 350) break;
+    }
+    const list = [...domains].filter(Boolean);
+    if (list.length === 0) {
+      setRegistryRollups({});
+      return;
+    }
+    (async () => {
+      try {
+        const res = await fetch(`${BACKEND}/api/registry-domain-categories`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ domains: list }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (data?.ok && data.rollups && typeof data.rollups === "object") setRegistryRollups(data.rollups);
+        else setRegistryRollups({});
+      } catch {
+        if (!cancelled) setRegistryRollups({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessions]);
+
+  const categories = useMemo(() => {
+    const todayKey = getTodayKey();
+    const todaySessions = sessions[todayKey] || {};
     const cats = {};
     for (const s of Object.values(todaySessions)) {
-      const cat = s.category || "other";
+      const dom = normDomain(s.domain);
+      const cat = (dom && registryRollups[dom]?.category) || s.category || "other";
       if (!cats[cat]) cats[cat] = { seconds: 0, earned: 0, domains: [] };
       cats[cat].seconds += s.totalSeconds || 0;
       cats[cat].earned += s.earned || 0;
       cats[cat].domains.push(s.domain);
     }
-    setCategories(cats);
-
-    if (Object.keys(cats).length > 0) fetchInsight(cats);
-  }
+    return cats;
+  }, [sessions, registryRollups]);
 
   async function fetchInsight(cats) {
     setInsightLoading(true);
@@ -315,18 +364,83 @@ export default function UserDashboard() {
       .map(([cat, data]) => `${cat}: ${Math.round(data.seconds / 60)} minutes`)
       .join(", ");
     try {
-      const res = await fetch(`${BACKEND}/api/insight`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ summary }),
+      const extId = readReclaimExtensionId();
+      const rt = globalThis.chrome?.runtime;
+      if (!extId || !rt) throw new Error("extension not available");
+
+      const data = await new Promise((resolve, reject) => {
+        // Prefer MV3 port for reliability
+        if (rt.connect) {
+          let port;
+          try {
+            port = rt.connect(extId, { name: "reclaim-dashboard" });
+          } catch {
+            port = null;
+          }
+          if (port) {
+            let settled = false;
+            const tid = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              try { port.disconnect(); } catch { /* ignore */ }
+              reject(new Error("insight timed out"));
+            }, 20000);
+            port.onMessage.addListener((msg) => {
+              if (settled) return;
+              if (msg?.type !== "RECLAIM_INSIGHT_RESULT") return;
+              settled = true;
+              clearTimeout(tid);
+              try { port.disconnect(); } catch { /* ignore */ }
+              resolve(msg.payload || { ok: false, error: "unknown" });
+            });
+            try {
+              port.postMessage({ type: "RECLAIM_INSIGHT", summary });
+            } catch {
+              clearTimeout(tid);
+              try { port.disconnect(); } catch { /* ignore */ }
+              reject(new Error("insight failed"));
+            }
+            return;
+          }
+        }
+
+        // Fallback: external sendMessage
+        if (rt.sendMessage) {
+          const tid = setTimeout(() => reject(new Error("insight timed out")), 20000);
+          try {
+            rt.sendMessage(extId, { type: "RECLAIM_INSIGHT", summary }, (resp) => {
+              clearTimeout(tid);
+              if (globalThis.chrome?.runtime?.lastError) {
+                reject(new Error(globalThis.chrome.runtime.lastError.message));
+                return;
+              }
+              resolve(resp || { ok: false, error: "unknown" });
+            });
+          } catch (err) {
+            clearTimeout(tid);
+            reject(err);
+          }
+          return;
+        }
+        reject(new Error("extension messaging unavailable"));
       });
-      const data = await res.json();
-      setInsight(data.insight || "");
+
+      if (data?.ok) setInsight(data.insight || "");
+      else throw new Error(data?.error || "insight failed");
     } catch {
       setInsight("Start the backend server to get AI insights.");
     }
     setInsightLoading(false);
   }
+
+  useEffect(() => {
+    if (Object.keys(categories).length === 0) return;
+    const t = setTimeout(() => {
+      fetchInsight(categories);
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchInsight closes over latest categories via effect re-runs
+  }, [categories]);
 
   async function connectWallet() {
     if (typeof window.ethereum !== "undefined") {
@@ -435,7 +549,14 @@ export default function UserDashboard() {
 
   const todayKey = getTodayKey();
   const todaySessions = sessions[todayKey] || {};
-  const topDomains = Object.values(todaySessions).sort((a, b) => b.totalSeconds - a.totalSeconds).slice(0, 8);
+  const effectiveSessionCategory = (s) => {
+    const dom = normDomain(s?.domain);
+    return (dom && registryRollups[dom]?.category) || s.category || "other";
+  };
+  const topDomains = Object.values(todaySessions)
+    .sort((a, b) => b.totalSeconds - a.totalSeconds)
+    .slice(0, 8)
+    .map((s) => ({ ...s, category: effectiveSessionCategory(s) }));
   const SCROLL_DOMAIN_MIN_DEPTH = 30;
   const scrolledDomainsAll = (() => {
     const byDomain = new Map();
@@ -444,9 +565,10 @@ export default function UserDashboard() {
         if (!s || !s.domain) continue;
         const depth = typeof s.maxScrollDepth === "number" ? s.maxScrollDepth : 0;
         if (depth < SCROLL_DOMAIN_MIN_DEPTH) continue;
+        const c = effectiveSessionCategory(s);
         const prev = byDomain.get(s.domain) || {
           domain: s.domain,
-          category: s.category || "other",
+          category: c,
           maxScrollDepth: 0,
           totalSeconds: 0,
           visits: 0,
@@ -456,8 +578,6 @@ export default function UserDashboard() {
         prev.visits += s.visits || 0;
         prev.earned += s.earned || 0;
         if (depth > prev.maxScrollDepth) prev.maxScrollDepth = depth;
-        // Prefer non-other category if we have one
-        const c = s.category || "other";
         if (prev.category === "other" && c !== "other") prev.category = c;
         byDomain.set(s.domain, prev);
       }

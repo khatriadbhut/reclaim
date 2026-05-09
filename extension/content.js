@@ -38,29 +38,78 @@
     const url = window.location.href.toLowerCase();
     const path = window.location.pathname.toLowerCase();
 
+    function hasSchemaProductSignals() {
+      try {
+        // JSON-LD Product / Offer
+        const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+        for (const s of scripts) {
+          const t = s.textContent;
+          if (!t) continue;
+          if (/"@type"\s*:\s*"Product"/i.test(t) && /"offers"\s*:/i.test(t)) return true;
+          if (/"@type"\s*:\s*"Offer"/i.test(t) && /"price"\s*:/i.test(t)) return true;
+        }
+        // Microdata Product
+        if (document.querySelector('[itemtype*="schema.org/Product"] [itemprop="price"]')) return true;
+      } catch {
+        /* ignore */
+      }
+      return false;
+    }
+
+    function hasAddToCartSignals() {
+      try {
+        const btn = document.querySelector('button, [role="button"], input[type="submit"]');
+        if (!btn) return false;
+        const txt = (btn.textContent || btn.getAttribute("value") || "").toLowerCase();
+        return /\b(add to cart|add to bag|buy now|checkout|place order)\b/.test(txt);
+      } catch {
+        return false;
+      }
+    }
+
+    function isLikelyEcommerceContext() {
+      // Known commerce domains (from search params + selector maps)
+      const known = new Set([
+        "amazon.in", "amazon.com", "flipkart.com", "myntra.com", "nykaa.com", "meesho.com", "ajio.com", "snapdeal.com",
+        "swiggy.com", "zomato.com", "booking.com", "makemytrip.com", "cleartrip.com", "skyscanner.com", "irctc.co.in"
+      ]);
+      if (known.has(domain)) return true;
+      if (hasSchemaProductSignals()) return true;
+      if (hasAddToCartSignals()) return true;
+      return false;
+    }
+
     // Cart / Checkout — highest intent
     if (/cart|checkout|basket|buy-now|payment|order/.test(url)) return "checkout";
 
-    // Product page
-    if (/product|item|dp\/|pdp|detail|p\/[a-z0-9]/.test(url)) return "product";
+    // Job listing (avoid generic "role" false positives)
+    if (/\/(careers?|jobs?)\b/.test(path) || /\/job\/|\/jobs\//.test(path)) return "job_listing";
+
+    // Property listing (avoid generic "sale" false positives)
+    if (/\/(property|properties|real-estate)\b/.test(path) || /\b(bhk|apartment|villa)\b/.test(url)) return "property_listing";
+
+    // Travel booking (keep tight; "package" is too ambiguous and caused false positives)
+    if (/\b(flight|flights|hotel|hotels|booking|itinerary|pnr|checkin|boarding|airline|airlines)\b/.test(url)) {
+      return "travel_booking";
+    }
+
+    const isEcom = isLikelyEcommerceContext();
+
+    // Product page: only if site looks like ecommerce (schema/add-to-cart/known domain)
+    if (isEcom && (/\/(dp|p|product|products|item|items)\b/.test(path) || /pdp|product-detail|\/p\/[a-z0-9]/.test(url))) {
+      return "product";
+    }
 
     // Search results
     if (/search|query|find|results|keyword|s=|q=|k=/.test(url)) return "search";
 
-    // Category / Listing page
-    if (/category|collection|listing|browse|shop|c\//.test(url)) return "category";
+    // Category / Listing page (avoid "shop" keyword on corporate sites)
+    if (isEcom && (/\/(category|collection|collections|listing|browse)\b/.test(path) || /\/c\//.test(path))) {
+      return "category";
+    }
 
     // Article / Blog
     if (/article|blog|news|post|story|read/.test(url)) return "article";
-
-    // Job listing
-    if (/job|career|vacancy|hiring|position|role/.test(url)) return "job_listing";
-
-    // Property listing
-    if (/property|flat|apartment|villa|bhk|rent|sale/.test(url)) return "property_listing";
-
-    // Travel booking
-    if (/flight|hotel|bus|train|holiday|package|booking/.test(url)) return "travel_booking";
 
     // Homepage
     if (path === "/" || path === "") return "homepage";
@@ -161,6 +210,18 @@
 
   // Step 2: Open Graph / Meta tags
   function extractFromMetaTags() {
+    function looksLikeMoney(v) {
+      const s = String(v || "").trim();
+      if (!s) return false;
+      // Reject common non-price counters like "19+" or "75%" etc.
+      if (/[+%]/.test(s) && !/[₹$€£¥]/.test(s)) return false;
+      // Currency symbol + amount
+      if (/[₹$€£¥]\s?\d/.test(s)) return true;
+      // Currency code with amount
+      if (/\b(usd|inr|eur|gbp|jpy|cad|aud)\b/i.test(s) && /\d/.test(s)) return true;
+      return false;
+    }
+
     const getMeta = (name) => {
       const el = document.querySelector(
         `meta[property="${name}"], meta[name="${name}"]`
@@ -178,7 +239,7 @@
     const name = getMeta("og:title") || getMeta("twitter:title");
     const brand = getMeta("og:brand") || getMeta("product:brand");
 
-    if (price) {
+    if (price && looksLikeMoney(price)) {
       return [{ price, currency, name, brand, availability: null }];
     }
     return [];
@@ -328,6 +389,79 @@
 
   // ─── 8. SEND DATA TO BACKGROUND ──────────────────────────────────────────────
 
+  function extractSeoText() {
+    try {
+      const getMeta = (name) => {
+        const el = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+        const v = el?.getAttribute("content");
+        return v ? String(v).trim() : "";
+      };
+      const title = String(document.title || "").trim();
+      const desc =
+        getMeta("description") ||
+        getMeta("og:description") ||
+        getMeta("twitter:description") ||
+        "";
+      const h1 = String(document.querySelector("h1")?.textContent || "").trim();
+      const parts = [title, desc, h1].filter(Boolean);
+      const txt = parts.join(" · ").replace(/\s+/g, " ").trim();
+      return txt.length > 400 ? txt.slice(0, 400) : txt;
+    } catch {
+      return "";
+    }
+  }
+
+  function extractPageHints() {
+    try {
+      const getMeta = (name) => {
+        const el = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+        const v = el?.getAttribute("content");
+        return v ? String(v).trim() : "";
+      };
+      const keywords = getMeta("keywords");
+      const ogType = getMeta("og:type") || "";
+
+      // Pull a few schema.org @type markers (very strong when present).
+      const schemaTypes = [];
+      const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+      for (const s of scripts) {
+        try {
+          const txt = s.textContent || "";
+          if (!txt) continue;
+          const data = JSON.parse(txt);
+          const items = Array.isArray(data) ? data : [data];
+          for (const item of items) {
+            const nodes = item && item["@graph"] ? item["@graph"] : [item];
+            for (const node of nodes) {
+              const t = node?.["@type"];
+              if (!t) continue;
+              const types = Array.isArray(t) ? t : [t];
+              for (const one of types) {
+                const st = String(one || "").trim();
+                if (!st) continue;
+                if (!schemaTypes.includes(st)) schemaTypes.push(st);
+                if (schemaTypes.length >= 6) break;
+              }
+              if (schemaTypes.length >= 6) break;
+            }
+            if (schemaTypes.length >= 6) break;
+          }
+          if (schemaTypes.length >= 6) break;
+        } catch {
+          /* ignore */
+        }
+      }
+
+      return {
+        keywords: keywords && keywords.length > 250 ? keywords.slice(0, 250) : keywords,
+        ogType: ogType && ogType.length > 60 ? ogType.slice(0, 60) : ogType,
+        schemaTypes,
+      };
+    } catch {
+      return { keywords: "", ogType: "", schemaTypes: [] };
+    }
+  }
+
   function sendData(extra = {}) {
     try {
       chrome.runtime.sendMessage({ type: "CONTENT_DATA", ...extra });
@@ -345,6 +479,12 @@
     pageType,
   };
   if (searchQuery) immediateData.searchQuery = searchQuery;
+  const seoText = extractSeoText();
+  if (seoText) immediateData.seoText = seoText;
+  const hints = extractPageHints();
+  if (hints.keywords) immediateData.metaKeywords = hints.keywords;
+  if (hints.ogType) immediateData.ogType = hints.ogType;
+  if (Array.isArray(hints.schemaTypes) && hints.schemaTypes.length) immediateData.schemaTypes = hints.schemaTypes;
   sendData(immediateData);
 
   // Extract prices + breadcrumbs after full page load

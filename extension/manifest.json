@@ -17,9 +17,11 @@
   ],
   "externally_connectable": {
     "matches": [
-      "http://127.0.0.1:5173/*",
       "http://localhost:5173/*"
     ]
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; base-uri 'none'; frame-ancestors 'none'"
   },
   "oauth2": {
     "client_id": "223652421240-37eie1fotpbbbteeev1m4ol6jo419g5d.apps.googleusercontent.com",
@@ -31,7 +33,6 @@
   "content_scripts": [
     {
       "matches": [
-        "http://127.0.0.1:5173/*",
         "http://localhost:5173/*"
       ],
       "js": ["dashboard-bridge.js"],

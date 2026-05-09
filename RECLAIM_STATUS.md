@@ -1,6 +1,6 @@
 # Reclaim — Project Status Document
-> Last updated: 2026-05-07
-> Version: 0.10.0
+> Last updated: 2026-05-09
+> Version: 0.11.0
 > Repo: https://github.com/khatriadbhut/reclaim
 
 ---
@@ -71,7 +71,7 @@ reclaim/
 │       └── ui/
 │           └── constants.js     # BACKEND origin, shared styles, landing CSS
 └── extension/
-    ├── background.js            # Service worker: OAuth, extract, sync, tab/session, external dashboard API, OPEN_USER_DASHBOARD
+    ├── background.js            # Service worker: OAuth, extract, classify, sync, tab/session; ALLOWED_DASHBOARD_ORIGINS for external API
     ├── content.js               # Page signals → background (all URLs, document_idle)
     ├── dashboard-bridge.js      # Vite dashboard only: extension id meta + postMessage storage bridge
     ├── generate_icons.py        # Optional asset helper
@@ -232,7 +232,7 @@ A production-grade content script injected into every page via Manifest v3 `cont
 - **Install hook** — `onInstalled` opens onboarding tab (see `background.js`)
 
 ### 4. Extension — Dashboard bridge (`dashboard-bridge.js`) ✅
-- Injected only on `http://localhost:5173/*` and `http://127.0.0.1:5173/*` at **`document_start`**
+- Injected only on `http://localhost:5173/*` at **`document_start`**
 - Injects `<meta name="reclaim-extension-id" content="…">` so the page can call `chrome.runtime.connect` / `sendMessage` to the extension id
 - Listens for `postMessage` `GET_EXTENSION_STATE` from the dashboard and replies with `EXTENSION_STATE` + payload from `chrome.storage.local` (fallback when external messaging is flaky)
 
@@ -264,18 +264,33 @@ A production-grade content script injected into every page via Manifest v3 `cont
 | GET | `/api/domain-lookup/quota` | WhoisXML free-tier usage status (per API key) |
 | POST | `/api/sync` | Ingest sessions + earnings + profile from extension |
 | GET | `/api/profile/:userId` | Aggregated profile + segments |
-| GET | `/api/packages` | Public package catalog |
-| POST | `/api/purchase` | Purchase flow (see implementation) |
-| GET | `/api/company/packages` | Authenticated package list for company UI |
+| GET | `/api/packages` | Public package catalog (metadata + samples; **no live user counts**) |
+| POST | `/api/registry-domain-categories` | Batch read of pinned domains from `domain-categories.json` (rate-limited; for dashboard label refresh) |
+| GET | `/api/company/packages` | Authenticated package list for company UI (**includes live segment counts**) |
 | GET | `/api/company/purchases` | Company purchase history |
 | POST | `/api/company/purchase` | Company purchase (curated package) |
 | POST | `/api/company/purchase/custom` | Custom module purchase (server-computed price) |
 | GET | `/api/company/custom-pricing` | Base + per-module USD + export column names |
 | GET | `/api/company/download/:purchaseId` | Download export |
 | POST | `/api/insight` | Short Gemini insight from summary |
-| GET | `/api/health` | Health / counts |
+| GET | `/api/health` | Liveness (`{ "status": "ok" }` only) |
 
 **Storage:** in-memory maps for users, sessions, companies, purchases (resets on server restart).
+
+**Security / deployment (summary):**
+
+- **`NODE_ENV=production`** enables strict CORS (no wildcard): allowed origins are localhost dashboard, optional **`ALLOWED_PUBLIC_ORIGINS`** (comma-separated), and `chrome-extension://…` extension IDs.
+- **`POST /api/auth/google`** requires **`RECLAIM_EXT_OAUTH_CLIENT_ID`** and always validates the Chrome access token via Google **tokeninfo** (`aud` must match).
+- **`USER_API_SECRET`**: required when **`SECURITY_STRICT=1`**; signs user API bearer tokens. In non-strict dev without an explicit secret, the server may generate one at startup (set explicitly for stable sessions).
+- **`TRUST_PROXY=1`**: set when the API sits behind AWS ALB / another reverse proxy so rate limits see the real client IP.
+- **`GET /api/packages`** no longer exposes aggregate user counts; **`GET /api/company/packages`** still does (authenticated).
+- Insight **`summary`** is normalized, length-capped, and embedded in prompts in a safer shape to reduce prompt-injection surface (model risk remains non-zero by nature).
+
+**Domain category consistency:**
+
+- **`lookupDomainRollup`** hits **`domain-categories.json`** first; when `domain_source` is **`registry`**, **`/api/classify-visit`** **pins** the final category (visit/page merge cannot override). The classify cache key includes the current registry category so JSON fixes invalidate stale cached responses.
+- **Extension** `saveSession`: after classify, the latest **`category`** (and related IAB fields) are **copied to every stored day** for that domain so one revisit corrects historical rows in `chrome.storage`.
+- **User dashboard** (`/user`): loads registry overlays via **`POST /api/registry-domain-categories`** so UI matches pinned JSON even before a revisit (requires backend reachable from the dashboard).
 
 **Robust domain categorization (WhoisXML + persistent cache + conservative heuristic fallback)**
 
@@ -380,7 +395,7 @@ Exports include:
 
 ### 9. Dashboard (React + Vite) ✅
 - **`Landing.jsx`** — marketing landing at `/` (consumer + **Reclaim Business** paths; positioning line: consent-aware / anonymized packages / businesses)
-- **`UserDashboard.jsx`** at `/user` — **Not** raw `chrome.storage` in the page on localhost (DevTools “fake” storage). On **`127.0.0.1` / `localhost`**: (1) wait for extension id (`?ext=` if valid 32-char id, else meta from bridge), (2) **`chrome.runtime.connect` / `sendMessage`** to read storage via **`externally_connectable`**, (3) **`postMessage`** bridge to `dashboard-bridge.js` as fallback; wall-clock polling (not `requestAnimationFrame`-only) so background tabs still authenticate before timeout. Elsewhere / future hosted origin: direct `chrome.storage.local` when the API exists. **AI insight** calls `BACKEND + /api/insight` when categories exist. Sign-in gate when no extension session is readable.
+- **`UserDashboard.jsx`** at `/user` — **Not** raw `chrome.storage` in the page on localhost (DevTools “fake” storage). On **`127.0.0.1` / `localhost`**: (1) wait for extension id (`?ext=` if valid 32-char id, else meta from bridge), (2) **`chrome.runtime.connect` / `sendMessage`** to read storage via **`externally_connectable`**, (3) **`postMessage`** bridge to `dashboard-bridge.js` as fallback; wall-clock polling (not `requestAnimationFrame`-only) so background tabs still authenticate before timeout. Elsewhere / future hosted origin: direct `chrome.storage.local` when the API exists. Merges **`POST /api/registry-domain-categories`** into today’s breakdown and top-sites rows so pinned **`domain-categories.json`** labels show even when stored sessions are stale. **AI insight** uses the extension to call **`/api/insight`**. Sign-in gate when no extension session is readable.
 - **`CompanyDashboard.jsx`** at `/company` — Google OAuth (web), cookie session, **curated packages** (columns, good-for, signals from API) vs **custom export** (per-module builder with export-column chips, order summary, server-priced totals). Purchase history table with download links. **Pricing:** server is source of truth for custom (`CUSTOM_PACKAGE_BASE_USD`, per-module map); client displays USD consistently. Exports are pseudonymous (**no legal names** in audience files by design).
 - Shared styling via `ui/constants.js` (`BACKEND`, `#0d0d0d`, `#00e5a0`, Syne + DM Mono, category colors, etc.)
 
@@ -438,7 +453,7 @@ Some packages and custom modules export raw `*_search_queries`. In addition, exp
 |---|---|---|---|
 | `/user` still requires extension + bridge (or external messaging) in dev; no server-backed “demo user” session yet | `dashboard/src/pages/UserDashboard.jsx` | Medium | Open |
 | No error boundary in React dashboard | `dashboard/src/App.jsx` | Low | Open |
-| No rate limiting on API — can burn Gemini quota | `backend/server.js` | Medium | Open |
+| API rate limits + AI-specific limiter; registry batch limiter | `backend/server.js` | Medium | Mitigated (tune for prod) |
 | `popup.js` hardcodes `http://localhost:3000` for `/api/insight` | `extension/popup/popup.js` | Low | Open |
 | Extension offline / backend down — partial error messaging only | `extension/*` | Low | Open |
 | `/api/categorize` legacy | `backend/server.js` | Low | Superseded by `/api/extract` |
@@ -490,6 +505,8 @@ Create **`backend/.env`** (never commit secrets). Minimum for extension + user i
 ```env
 GEMINI_API_KEY=your_key_here
 PORT=3000
+# Chrome extension OAuth client ID (same as manifest oauth2.client_id) — required for /api/auth/google
+RECLAIM_EXT_OAUTH_CLIENT_ID=
 ```
 
 For **Reclaim Business** (`/company`):

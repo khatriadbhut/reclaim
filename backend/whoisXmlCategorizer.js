@@ -1,41 +1,37 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { classifyTaxonomyName } from "./whoisXmlTaxonomyClassify.js";
+
 const WHOISXML_ENDPOINT = "https://website-categorization.whoisxmlapi.com/api/v3";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const WHOISXML_ID_ROLLUP = JSON.parse(fs.readFileSync(path.join(__dirname, "whoisXmlIdRollup.json"), "utf8"));
+
+/** Backwards-compatible name for callers; delegates to full taxonomy classifier. */
 function mapWhoisXmlCategoryToReclaim(name) {
-  const n = String(name || "").toLowerCase();
-  // Normalize a few common variants
-  const s = n.replace(/&/g, "and");
-
-  // --- High precision first ---
-  if (/\b(real estate|real-estate|property|properties|housing|apartments?)\b/.test(s)) return "realestate";
-  if (/\b(job|jobs|career|careers|employment|recruit|recruiting|recruitment|hr|human resources|talent|hiring|resume|cv)\b/.test(s)) return "jobs";
-  if (/\b(travel|tourism|hotel|hotels|airline|air travel|flights?|booking|vacation|trip|transportation|ride share|rideshare|car rental|rail)\b/.test(s)) return "travel";
-  if (/\b(shopping|retail|e-?commerce|marketplace|coupons?|deals?|discounts?)\b/.test(s)) return "shopping";
-  if (/\b(bank|banking|finance|financial|fintech|insurance|invest|investment|trading|broker|brokerage|stocks?|equity|crypto|loans?|mortgage|credit|credit card|payments?|payment processing|vc|venture capital|private equity)\b/.test(s)) {
-    return "finance";
-  }
-  if (/\b(news|newspaper|journalism|current events|media|press|politic|government|international affairs)\b/.test(s)) return "news";
-  if (/\b(social network|social networking|social media|community|forums?|messaging|chat|dating)\b/.test(s)) return "social";
-  if (/\b(health|healthy living|wellness|fitness|medical|medicine|pharma|pharmaceutical|doctor|clinic|hospital|disease)\b/.test(s)) return "health";
-  if (/\b(education|training|courses?|learning|university|college|school|reference|tutorials?)\b/.test(s)) return "education";
-
-  // --- Broader tech coverage (common vendor labels) ---
-  if (
-    /\b(technology|tech|computer|computing|software|internet|web|developer|programming|cloud|saas|ai|artificial intelligence|it services|information technology|hosting|data center|cybersecurity|security)\b/.test(s)
-  ) {
-    return "technology";
-  }
-
-  // --- Entertainment ---
-  if (/\b(entertainment|television|tv|movies?|film|music|streaming|games?|gaming|sports)\b/.test(s)) return "entertainment";
-
-  // --- Food ---
-  if (/\b(food|restaurant|dining|recipes?|cuisine|delivery|takeout|groceries?)\b/.test(s)) return "food";
-
-  return null;
+  return classifyTaxonomyName(name);
 }
 
+function rollupForWhoisRow(id, name) {
+  if (id === 0 || id === "0") return null;
+  const key = id != null ? String(id) : "";
+  if (key && Object.prototype.hasOwnProperty.call(WHOISXML_ID_ROLLUP, key)) {
+    const v = WHOISXML_ID_ROLLUP[key];
+    if (v != null) return v;
+  }
+  return classifyTaxonomyName(name);
+}
+
+/**
+ * Maps vendor categories → Reclaim rollup using:
+ * 1) Static id → rollup table (full official taxonomy; regenerated via scripts/build-whois-rollup-map.mjs)
+ * 2) Confidence-weighted votes across all qualifying rows (handles noisy secondary tags)
+ * 3) classifyTaxonomyName() fallback for new IDs / labels
+ */
 export function pickStrictWhoisMapping(categories, minConfidence) {
   if (!Array.isArray(categories) || categories.length === 0) return null;
+  const min = typeof minConfidence === "number" ? minConfidence : 0.6;
   const ranked = categories
     .filter((c) => c && typeof c === "object")
     .map((c) => ({
@@ -43,15 +39,64 @@ export function pickStrictWhoisMapping(categories, minConfidence) {
       name: String(c.name || "").trim(),
       confidence: typeof c.confidence === "number" ? c.confidence : null,
     }))
-    .filter((c) => c.name && c.confidence != null && c.confidence > 0 && c.confidence >= minConfidence)
+    .filter((c) => c.name && c.confidence != null && c.confidence > 0 && c.confidence >= min)
     .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
 
+  const agg = new Map();
+
   for (const c of ranked) {
-    const mapped = mapWhoisXmlCategoryToReclaim(c.name);
-    if (mapped) return { category: mapped, confidence: c.confidence, iab: { id: c.id, name: c.name } };
+    const rollup = rollupForWhoisRow(c.id, c.name);
+    if (!rollup) continue;
+    const conf = c.confidence || 0;
+    const cur = agg.get(rollup) || { sum: 0, maxConf: -1, bestRow: null };
+    cur.sum += conf;
+    if (conf > cur.maxConf) {
+      cur.maxConf = conf;
+      cur.bestRow = { id: c.id, name: c.name };
+    }
+    agg.set(rollup, cur);
   }
-  return null;
+
+  if (!agg.size) return null;
+
+  const sorted = [...agg.entries()].sort((a, b) => {
+    if (b[1].sum !== a[1].sum) return b[1].sum - a[1].sum;
+    return b[1].maxConf - a[1].maxConf;
+  });
+
+  const [winCat, winData] = sorted[0];
+  if (!winData.bestRow) return null;
+
+  // Near-tie between top two rollups: trust the single highest-confidence vendor row instead of summed vote.
+  if (sorted.length >= 2) {
+    const second = sorted[1][1];
+    const sumGap = winData.sum - second.sum;
+    const confGap = winData.maxConf - second.maxConf;
+    if (sumGap < 0.12 && confGap < 0.08) {
+      for (const c of ranked) {
+        const r = rollupForWhoisRow(c.id, c.name);
+        if (r) {
+          const conf = c.confidence || 0;
+          return {
+            category: r,
+            confidence: conf,
+            iab: { id: c.id, name: c.name },
+            registryPin: conf >= 0.78,
+          };
+        }
+      }
+      return null;
+    }
+  }
+
+  const sumGap2 = sorted.length >= 2 ? winData.sum - sorted[1][1].sum : 1;
+  const registryPin =
+    winData.maxConf >= 0.72 && (sorted.length === 1 || sumGap2 >= 0.16);
+
+  return { category: winCat, confidence: winData.maxConf, iab: winData.bestRow, registryPin };
 }
+
+export { mapWhoisXmlCategoryToReclaim };
 
 export async function whoisXmlLookup({ apiKey, urlOrDomain }) {
   const target = String(urlOrDomain || "").trim();

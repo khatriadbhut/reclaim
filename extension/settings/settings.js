@@ -35,10 +35,18 @@ async function loadSettings() {
 
   // Avatar + name
   const avatarWrap = document.getElementById("profileAvatarWrap");
+  avatarWrap.replaceChildren();
   if (result.userPicture) {
-    avatarWrap.innerHTML = `<img class="profile-avatar" src="${result.userPicture}" alt="">`;
+    const img = document.createElement("img");
+    img.className = "profile-avatar";
+    img.src = String(result.userPicture);
+    img.alt = "";
+    avatarWrap.appendChild(img);
   } else if (result.userName) {
-    avatarWrap.innerHTML = `<div class="profile-avatar-placeholder">${result.userName[0].toUpperCase()}</div>`;
+    const div = document.createElement("div");
+    div.className = "profile-avatar-placeholder";
+    div.textContent = String(result.userName).slice(0, 1).toUpperCase();
+    avatarWrap.appendChild(div);
   }
   document.getElementById("profileName").textContent = result.userName || "Unknown";
   document.getElementById("profileEmail").textContent = result.userEmail || "";
@@ -47,7 +55,12 @@ async function loadSettings() {
   let profile = null;
   if (result.userId) {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/auth/user?userId=${encodeURIComponent(result.userId)}`);
+      const { userApiToken } = await chrome.storage.local.get(["userApiToken"]);
+      const res = await fetch(`${BACKEND_URL}/api/auth/user/${encodeURIComponent(result.userId)}`, {
+        headers: {
+          ...(userApiToken ? { Authorization: `Bearer ${userApiToken}` } : {}),
+        }
+      });
       if (res.ok) {
         const data = await res.json();
         const p = data.profile || data;
@@ -100,6 +113,111 @@ async function loadSettings() {
   if (result.lastUpdated) {
     const d = new Date(result.lastUpdated);
     document.getElementById("statSync").textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+}
+
+async function fetchIpLocation() {
+  try {
+    const res = await fetch("https://ipapi.co/json/");
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    return { city: data.city || "Unknown", region: data.region || "", country: data.country_name || "", source: "ip" };
+  } catch {
+    return { city: "Unknown", region: "", country: "", source: "ip" };
+  }
+}
+
+async function fetchGpsLocation(lat, lng) {
+  try {
+    // Same endpoint used in onboarding to map GPS → city
+    const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lng)}&localityLanguage=en`);
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    return {
+      city: data.city || data.locality || data.principalSubdivision || "Unknown",
+      region: data.principalSubdivision || "",
+      country: data.countryName || "",
+      source: "gps",
+    };
+  } catch {
+    return await fetchIpLocation();
+  }
+}
+
+async function requestGpsAgain() {
+  const btn = document.getElementById("requestLocationBtn");
+  const statusEl = document.getElementById("locationEnableStatus");
+  if (!btn || !statusEl) return;
+
+  btn.disabled = true;
+  statusEl.className = "save-status";
+  statusEl.textContent = "requesting location...";
+
+  try {
+    if (!navigator.geolocation) throw new Error("geolocation unavailable");
+
+    const loc = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve(pos),
+        (err) => reject(err),
+        { timeout: 8000, maximumAge: 300000 }
+      );
+    });
+
+    const gpsLoc = await fetchGpsLocation(loc.coords.latitude, loc.coords.longitude);
+    await chrome.storage.local.set({ userLocation: gpsLoc });
+
+    document.getElementById("settingLocation").textContent = [gpsLoc.city, gpsLoc.country].filter(Boolean).join(", ") || "—";
+    document.getElementById("settingLocationSource").textContent = gpsLoc.source === "gps" ? "GPS (high accuracy)" : "IP address (city-level)";
+
+    document.getElementById("locationNudge").style.display = gpsLoc.source === "gps" ? "none" : "block";
+
+    statusEl.className = "save-status success";
+    statusEl.textContent = "✓ Location enabled";
+
+    // Best-effort sync so location improves future exports.
+    // UX-safe: if backend is down, we still keep the local location.
+    try {
+      const stored = await chrome.storage.local.get(["sessions", "totalEarnings", "userProfile", "userId", "userApiToken"]);
+      const userId = stored.userId;
+      if (userId && stored.sessions) {
+        const controller = new AbortController();
+        const tid = setTimeout(() => controller.abort(), 15000);
+        try {
+          await fetch(`${BACKEND_URL}/api/sync`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(stored.userApiToken ? { Authorization: `Bearer ${stored.userApiToken}` } : {}),
+            },
+            signal: controller.signal,
+            body: JSON.stringify({
+              userId,
+              sessions: stored.sessions || {},
+              totalEarnings: stored.totalEarnings || 0,
+              profile: { ...(stored.userProfile || {}), location: gpsLoc },
+            }),
+          });
+        } finally {
+          clearTimeout(tid);
+        }
+      }
+    } catch {
+      /* backend optional */
+    }
+  } catch (err) {
+    const code = err && typeof err.code === "number" ? err.code : null;
+    if (code === 1 || code === 2) {
+      // PERMISSION_DENIED / POSITION_UNAVAILABLE
+      statusEl.className = "save-status error";
+      statusEl.textContent = "Location blocked. Enable it in Chrome site settings and try again.";
+    } else {
+      statusEl.className = "save-status error";
+      statusEl.textContent = "Could not request location.";
+    }
+    document.getElementById("locationNudge").style.display = "block";
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -184,9 +302,13 @@ document.getElementById("saveDemo").addEventListener("click", async () => {
   let backendOk = false;
   if (savedUserId) {
     try {
+      const { userApiToken } = await chrome.storage.local.get(["userApiToken"]);
       const res = await fetch(`${BACKEND_URL}/api/auth/user`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(userApiToken ? { Authorization: `Bearer ${userApiToken}` } : {}),
+        },
         body: JSON.stringify({ userId: savedUserId, profile })
       });
       backendOk = res.ok;
@@ -227,3 +349,8 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
 document.getElementById("backBtn").addEventListener("click", () => window.close());
 
 loadSettings();
+
+// Allow users to request GPS later in Settings when they previously denied it.
+document.getElementById("requestLocationBtn")?.addEventListener("click", () => {
+  void requestGpsAgain();
+});

@@ -87,6 +87,12 @@ If you use **Reclaim Business** (`/company`), set the `COMPANY_*` variables in `
 |----------|----------------|---------|
 | `GEMINI_API_KEY` | AI insights | Gemini model calls |
 | `PORT` | API | Listen port (default 3000) |
+| `RECLAIM_EXT_OAUTH_CLIENT_ID` | Extension sign-in | Chrome **extension** OAuth client ID; must match `manifest.json` → `oauth2.client_id`. Server validates every token’s `aud` via Google tokeninfo. |
+| `USER_API_SECRET` | Signed user API tokens | At least 32 chars; signs bearer tokens after Google auth. **Required** when `SECURITY_STRICT=1` (including `NODE_ENV=production`). |
+| `SECURITY_STRICT` | Hardening | If `1`, enforces strong `USER_API_SECRET` and origin-restricted CORS (in addition to production defaults). |
+| `ALLOWED_PUBLIC_ORIGINS` | Production API + dashboard | Comma-separated extra origins allowed on user APIs when not using wildcard CORS (e.g. `https://app.example.com`). |
+| `TRUST_PROXY` | Deploy behind ALB/nginx | Set to `1` so rate limiting uses `X-Forwarded-For` correctly. |
+| `EXPORT_ID_SECRET` | Company exports | At least 32 chars; hashes user ids in B2B export rows (see `.env.example`). |
 | `COMPANY_GOOGLE_CLIENT_ID` | `/company` login | Web OAuth client ID |
 | `COMPANY_GOOGLE_CLIENT_SECRET` | `/company` login | Web OAuth secret |
 | `COMPANY_OAUTH_REDIRECT_URL` | `/company` login | Callback URL registered in Google Cloud |
@@ -117,13 +123,20 @@ For anything other than localhost, update:
 - `extension/popup/popup.js` — `fetch` URLs and dashboard link if needed
 - `extension/manifest.json` — `host_permissions` for your API origin (and remove `localhost` if unused)
 - `dashboard/src/ui/constants.js` — `BACKEND`
-- `backend/.env` — `COMPANY_OAUTH_REDIRECT_URL`, `COMPANY_DASHBOARD_ORIGIN` to match deployed hosts
+- `extension/background.js` — `ALLOWED_DASHBOARD_ORIGINS` (must align with `manifest.json` → `externally_connectable.matches`)
+- `backend/.env` — `COMPANY_OAUTH_REDIRECT_URL`, `COMPANY_DASHBOARD_ORIGIN`, `ALLOWED_PUBLIC_ORIGINS`, `RECLAIM_EXT_OAUTH_CLIENT_ID`, `TRUST_PROXY=1` behind a load balancer
 
 ## Security notes
 
 - Never commit **`backend/.env`** or API keys.
-- Extension user auth uses **Chrome Identity** + your extension OAuth client; company auth uses **cookies** and a separate web OAuth client.
+- Extension user auth uses **Chrome Identity** + **`RECLAIM_EXT_OAUTH_CLIENT_ID`**; the backend **always** checks token audience via Google **tokeninfo** before minting API tokens.
+- **`NODE_ENV=production`**: strict CORS (no `*`); set **`ALLOWED_PUBLIC_ORIGINS`** for your real HTTPS dashboard. User APIs still require **`Authorization: Bearer`** except for auth + public catalog/registry batch.
+- **`GET /api/packages`** returns catalog metadata only (no live user counts); segment counts require company auth via **`GET /api/company/packages`**.
+- **`GET /api/health`** returns only `{ "status": "ok" }` (no internal counters).
+- Company auth uses **cookies** and a separate web OAuth client.
 - This repo uses **in-memory** storage on the server; restarting the backend clears users/sessions/purchases until you add a database.
+
+See **[RECLAIM_STATUS.md](./RECLAIM_STATUS.md)** for the full API list, categorization pipeline, and deployment-oriented security summary.
 
 ## Tech stack
 

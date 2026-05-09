@@ -47,7 +47,7 @@ function hideAllMainViews() {
 function showSetupRequired(state) {
   hideAllMainViews();
   document.getElementById("setupRequiredView").classList.remove("hidden");
-  document.getElementById("userAvatarContainer").innerHTML = "";
+  document.getElementById("userAvatarContainer").replaceChildren();
 
   const loggedIn = !!(state && state.isLoggedIn);
   document.getElementById("setupTitle").textContent = loggedIn ? "Finish setup" : "Set up Reclaim";
@@ -68,7 +68,7 @@ function showSetupRequired(state) {
 function showLoggedOut() {
   hideAllMainViews();
   document.getElementById("loggedOutView").classList.remove("hidden");
-  document.getElementById("userAvatarContainer").innerHTML = "";
+  document.getElementById("userAvatarContainer").replaceChildren();
 }
 
 function showLoggedIn(state) {
@@ -77,10 +77,21 @@ function showLoggedIn(state) {
 
   // Avatar in header
   const avatarContainer = document.getElementById("userAvatarContainer");
+  avatarContainer.replaceChildren();
   if (state.userPicture) {
-    avatarContainer.innerHTML = `<img class="user-avatar-sm" src="${state.userPicture}" alt="" id="avatarBtn" title="${state.userName || ''}">`;
+    const img = document.createElement("img");
+    img.className = "user-avatar-sm";
+    img.id = "avatarBtn";
+    img.alt = "";
+    img.src = String(state.userPicture);
+    img.title = state.userName ? String(state.userName) : "";
+    avatarContainer.appendChild(img);
   } else if (state.userName) {
-    avatarContainer.innerHTML = `<div class="user-avatar-sm-placeholder" id="avatarBtn">${state.userName[0].toUpperCase()}</div>`;
+    const div = document.createElement("div");
+    div.className = "user-avatar-sm-placeholder";
+    div.id = "avatarBtn";
+    div.textContent = String(state.userName).slice(0, 1).toUpperCase();
+    avatarContainer.appendChild(div);
   }
 
   // Avatar click → settings
@@ -143,7 +154,13 @@ async function loadData() {
   const totalEl = document.getElementById("totalEarnings");
   const dollars = Math.floor(totalEarnings);
   const cents = ((totalEarnings - dollars) * 100).toFixed(0).padStart(2, "0");
-  totalEl.innerHTML = `$${dollars}<span class="cents">.${cents}</span>`;
+  totalEl.replaceChildren();
+  const dollarsNode = document.createTextNode(`$${dollars}`);
+  const centsNode = document.createElement("span");
+  centsNode.className = "cents";
+  centsNode.textContent = `.${cents}`;
+  totalEl.appendChild(dollarsNode);
+  totalEl.appendChild(centsNode);
 
   // Today earnings
   const todayEarned = Object.values(todaySessions).reduce((sum, s) => sum + (s.earned || 0), 0);
@@ -160,7 +177,11 @@ async function loadData() {
 
   const listEl = document.getElementById("categoryList");
   if (Object.keys(categories).length === 0) {
-    listEl.innerHTML = `<div class="empty-state">start browsing to see your data</div>`;
+    listEl.replaceChildren();
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "start browsing to see your data";
+    listEl.appendChild(empty);
     renderInsight(null);
     return;
   }
@@ -168,16 +189,35 @@ async function loadData() {
   const maxSeconds = Math.max(...Object.values(categories).map(c => c.seconds));
   const sorted = Object.entries(categories).sort((a, b) => b[1].seconds - a[1].seconds);
 
-  listEl.innerHTML = sorted.map(([cat, data]) => {
+  listEl.replaceChildren();
+  for (const [cat, data] of sorted) {
     const pct = maxSeconds > 0 ? (data.seconds / maxSeconds) * 100 : 0;
     const colorClass = CATEGORY_COLORS[cat] || "cat-other";
-    return `
-      <div class="category-row">
-        <div class="category-name">${cat}</div>
-        <div class="bar-track"><div class="bar-fill ${colorClass}" style="width:${pct}%"></div></div>
-        <div class="category-time">${formatTime(data.seconds)}</div>
-      </div>`;
-  }).join("");
+
+    const row = document.createElement("div");
+    row.className = "category-row";
+
+    const name = document.createElement("div");
+    name.className = "category-name";
+    name.textContent = String(cat);
+
+    const track = document.createElement("div");
+    track.className = "bar-track";
+
+    const fill = document.createElement("div");
+    fill.className = `bar-fill ${colorClass}`;
+    fill.style.width = `${pct}%`;
+    track.appendChild(fill);
+
+    const time = document.createElement("div");
+    time.className = "category-time";
+    time.textContent = formatTime(data.seconds);
+
+    row.appendChild(name);
+    row.appendChild(track);
+    row.appendChild(time);
+    listEl.appendChild(row);
+  }
 
   renderInsight(categories);
 }
@@ -204,8 +244,13 @@ async function renderInsight(categories) {
   const summary = Object.entries(categories).map(([cat, data]) => `${cat}: ${Math.round(data.seconds / 60)} minutes`).join(", ");
 
   try {
+    const { userApiToken } = await chrome.storage.local.get(["userApiToken"]);
     const response = await fetch("http://localhost:3000/api/insight", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(userApiToken ? { Authorization: `Bearer ${userApiToken}` } : {}),
+      },
       body: JSON.stringify({ summary })
     });
     if (!response.ok) throw new Error();
