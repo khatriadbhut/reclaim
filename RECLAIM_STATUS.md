@@ -45,13 +45,27 @@ Large brokers often combine many feeds (panels, partnerships, resale markets). S
 
 ```
 reclaim/
+├── DATA_PIPELINE_ROADMAP.md       # Canonical pipeline roadmap + Postgres migration track
 ├── .env.example                 # Env template — see “Environment variables” below
 ├── .gitignore
 ├── README.md                    # Quick start, production URL checklist
 ├── RECLAIM_STATUS.md            # This file
 ├── backend/
 │   ├── package.json
-│   └── server.js                # Express: user + company APIs, Gemini, in-memory store
+│   ├── server.js                # Express: user + company APIs, Gemini, in-memory store (+ optional Postgres durability)
+│   ├── data-label-template.json # Optional Data Label template (deferred for early deals)
+│   ├── db/
+│   │   └── persistence.js        # Optional Postgres durability for sync state (`reclaim_sync`)
+│   ├── enrichment/
+│   │   └── priceParser.js        # Robust price normalization + currency guardrails
+│   ├── export/
+│   │   ├── dataLabel.js          # Builds `data_label` payload for JSON exports (behind env flag)
+│   │   ├── exportProfiles.js     # Activation vs analytics export SKUs (column stripping)
+│   │   ├── governance.js         # k-anonymity / minimum row floor gating
+│   │   └── shrinkage.js          # Optional shrinkage for unstable small-N distributions
+│   └── scripts/
+│       ├── verify-export-columns.mjs     # Dashboard ↔ server contract (export column keys)
+│       └── verify-export-governance.mjs  # Activation SKU governance (banned key stripping)
 ├── dashboard/
 │   ├── .gitignore
 │   ├── eslint.config.js
@@ -89,6 +103,8 @@ reclaim/
         ├── settings.html
         └── settings.js
 ```
+
+Note: This tree lists the **important contract / pipeline files** and key entrypoints. It is not intended to document every file in the repo.
 
 ---
 
