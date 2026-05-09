@@ -58,6 +58,8 @@ npm run dev
 
 Opens **http://localhost:5173** — landing at `/`, user dashboard at `/user`, company dashboard at `/company`.
 
+**User dashboard (`/user`)** needs the API up for best accuracy: it calls `POST /api/registry-domain-categories` so today’s category breakdown and “top sites” can match **pinned** domains in `backend/domain-categories.json` when extension storage still has an older `category` for the same host.
+
 ### 3. Chrome extension
 
 1. Open `chrome://extensions`

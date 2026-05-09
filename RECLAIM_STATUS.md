@@ -54,7 +54,6 @@ reclaim/
 │   └── server.js                # Express: user + company APIs, Gemini, in-memory store
 ├── dashboard/
 │   ├── .gitignore
-│   ├── README.md
 │   ├── eslint.config.js
 │   ├── index.html
 │   ├── package.json
