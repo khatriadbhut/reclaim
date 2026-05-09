@@ -467,7 +467,18 @@ function genderLabel(v) {
   return { M: "Male", F: "Female", other: "Other", "prefer-not": "Prefer not to say" }[v] || v || "—";
 }
 function occupationLabel(v) {
-  return { student: "Student", salaried: "Salaried", "business-owner": "Business Owner", freelancer: "Freelancer", other: "Other" }[v] || v || "—";
+  const m = {
+    student: "Student",
+    salaried: "Employed (salaried)",
+    self_employed: "Self-employed / Freelancer",
+    "business-owner": "Business owner",
+    homemaker: "Homemaker",
+    job_seeking: "Looking for work",
+    prefer_not_to_say: "Prefer not to say",
+    freelancer: "Freelancer",
+    other: "Other",
+  };
+  return m[v] || v || "—";
 }
 
 function buildSuccessScreen() {

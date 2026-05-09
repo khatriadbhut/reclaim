@@ -1,0 +1,28 @@
+{
+  "data_transparency": {
+    "standard": "IAB Tech Lab Data Transparency / Data Label (disclosure pattern)",
+    "reference_urls": [
+      "https://iabtechlab.com/standards/data-transparency/",
+      "https://www.datalabel.org/"
+    ]
+  },
+  "provider": {
+    "name": "Reclaim",
+    "domain": null,
+    "contact": null
+  },
+  "segment_disclosure": {
+    "criteria_summary": null,
+    "data_sources": ["browser_extension_panel", "user_consent_onboarding"],
+    "collection_window": null,
+    "refresh_cadence": "per_sync_and_export_batch",
+    "id_type": "pseudonymous_hashed_panel_id",
+    "taxonomy": ["internal_rollup", "iab_content_mapping_where_available"]
+  },
+  "quality_governance": {
+    "min_export_rows_enforced": null,
+    "panel_universe_size": null,
+    "distribution_shrinkage_lambda": null,
+    "schema_version": null
+  }
+}

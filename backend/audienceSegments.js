@@ -2,6 +2,21 @@
  * Rollup-based + IAB Content Taxonomy tier-1 time segments for exports and profile.
  */
 
+const ROLLUP_TO_IAB_TIER1 = {
+  shopping: "Shopping",
+  finance: "Business and Finance",
+  technology: "Technology & Computing",
+  travel: "Travel",
+  realestate: "Real Estate",
+  jobs: "Careers",
+  entertainment: "Entertainment",
+  health: "Healthy Living",
+  food: "Food & Drink",
+  education: "Education",
+  news: "Politics",
+  social: "Entertainment",
+};
+
 export function tier1FromSession(s, taxonomyById) {
   const ic = s?.iab_content;
   const pid = s?.iab_content_primary_id != null ? String(s.iab_content_primary_id) : null;
@@ -14,6 +29,8 @@ export function tier1FromSession(s, taxonomyById) {
   if (pid && taxonomyById?.has(pid)) {
     return taxonomyById.get(pid).tier1 || null;
   }
+  const cat = String(s?.category || s?.packaged_category || "").toLowerCase();
+  if (cat && ROLLUP_TO_IAB_TIER1[cat]) return ROLLUP_TO_IAB_TIER1[cat];
   return null;
 }
 
@@ -122,10 +139,9 @@ export function audienceSegmentExportFields(sessions, totalCatSeconds, totalBrow
   const { tier1Seconds, totalIabLabeledSeconds } = accumulateIabContentTier1Seconds(sessions, taxonomyById);
   const iabSegs = computeIabAudienceSegments(tier1Seconds, totalIabLabeledSeconds, totalBrowsingSeconds);
   const merged = mergeAudienceSegments(rollupSegs, iabSegs);
-  if (!merged.length) return null;
   return {
     audience_segments: merged,
-    audience_segments_iab: iabSegs.length ? iabSegs : null,
-    audience_segments_rollup: rollupSegs.length ? rollupSegs : null,
+    audience_segments_iab: iabSegs.length ? iabSegs : [],
+    audience_segments_rollup: rollupSegs.length ? rollupSegs : [],
   };
 }

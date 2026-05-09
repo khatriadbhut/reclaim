@@ -45,7 +45,7 @@ const usdMuted = {
 };
 
 /** Included on every custom export row (see `buildCustomPackageRows` in backend). */
-const CUSTOM_EXPORT_BASE_COLUMNS = ["user_id", "visit_segments_30d"];
+const CUSTOM_EXPORT_BASE_COLUMNS = ["user_id", "visit_segments_7d", "visit_segments_30d"];
 
 /**
  * Category ids + add-on prices must match `CUSTOM_CATEGORY_PRICE_USD` in `backend/server.js`.
@@ -70,7 +70,8 @@ const DATA_CATEGORIES = [
       "top_categories",
       "total_browsing_hours",
       "time_spent_per_category",
-      "active_days",
+      "active_days_last_30d",
+      "category_trend",
       "peak_hour",
       "iab_provider",
       "iab_taxonomy",
@@ -84,7 +85,6 @@ const DATA_CATEGORIES = [
       "iab_content_primary_name",
       "iab_content_primary_confidence",
       "iab_content_primary_weight_seconds",
-      "iab_content_affinity_top",
     ],
     description:
       "Weekly rollups (your internal categories), time per category, and peak activity — plus IAB-style signals for buyers: vendor website categories (e.g. WhoisXML), time-weighted primary topic, and affinity lists mapped to IAB Tech Lab Content Taxonomy.",
@@ -93,9 +93,9 @@ const DATA_CATEGORIES = [
     id: "purchase_intent",
     name: "Purchase Intent",
     price: 69,
-    tagline: "Intent scores, price range, in-market verticals",
+    tagline: "Engagement score, price range, in-market verticals",
     exportColumns: [
-      "max_intent_score",
+      "engagement_score",
       "intent_by_vertical",
       "price_ranges_viewed",
       "intent_search_queries",
@@ -105,14 +105,20 @@ const DATA_CATEGORIES = [
       "intent_query_keyword_hits",
     ],
     description:
-      "Gemini-extracted intent signals per session. Near-term buying indicators — highest conversion value segment.",
+      "Session engagement score (dwell-weighted), price ranges, and query-derived topic labels — not a standalone semantic purchase-intent model.",
   },
   {
     id: "brand_affinity",
     name: "Brand Affinity",
     price: 49,
     tagline: "Researched brands, premium brand signals, cross-site visits",
-    exportColumns: ["top_brands_researched", "premium_brands", "premium_brand_flag", "brand_cross_site_visits"],
+    exportColumns: [
+      "top_brands_researched",
+      "premium_brands",
+      "premium_brand_flag",
+      "brand_cross_site_visits",
+      "return_visitor_domains",
+    ],
     description:
       "Brand-level engagement signals. Essential for brand lift studies and competitive conquesting campaigns.",
   },
@@ -120,7 +126,7 @@ const DATA_CATEGORIES = [
     id: "content_signals",
     name: "Content & Page Signals",
     price: 39,
-    tagline: "Page types, search queries, scroll depth, breadcrumbs",
+    tagline: "Page types, search queries, scroll depth",
     exportColumns: [
       "page_types",
       "search_queries",
@@ -129,8 +135,6 @@ const DATA_CATEGORIES = [
       "content_query_topics",
       "content_query_keyword_hits",
       "max_scroll_depth",
-      "breadcrumbs",
-      "keywords",
     ],
     description:
       "In-page engagement signals captured by the content script. Used for contextual targeting and content affinity scoring.",
@@ -140,7 +144,7 @@ const DATA_CATEGORIES = [
     name: "Temporal Patterns",
     price: 35,
     tagline: "Time of day, visit hour, peak browsing windows",
-    exportColumns: ["peak_hour", "is_night_owl", "late_night_hours", "hour_distribution", "active_days"],
+    exportColumns: ["peak_hour", "is_night_owl", "late_night_hours", "activity_pattern", "active_days_last_30d"],
     description:
       "When users are most active online. Powers dayparting strategies for ad scheduling optimization.",
   },
@@ -154,7 +158,8 @@ const DATA_CATEGORIES = [
       "prices_found",
       "checkout_visits",
       "product_page_visits",
-      "shopping_brands",
+      "price_sensitivity_tier",
+      "purchase_funnel_stage",
     ],
     description:
       "Deep e-commerce behavior extracted per session. Ideal for retargeting, dynamic product ads, and price-sensitivity modeling.",
@@ -168,8 +173,7 @@ const DATA_CATEGORIES = [
       "finance_browsing_hours",
       "finance_intent_level",
       "finance_decision_maker",
-      "finance_domains_visited",
-      "finance_search_queries",
+      "finance_domain_visit_count",
       "max_finance_intent_score",
       "finance_query_intent_level",
       "finance_query_intent_reasons",
@@ -351,7 +355,8 @@ function CustomPackageBuilder({ purchaseFormat, onPurchase }) {
       <div style={{ marginBottom: 16 }}>
         <div style={styles.cardLabel}>Custom export</div>
         <p style={{ ...bodySans, margin: "6px 0 0", fontSize: 12, color: "#8a8a8a", maxWidth: 560, lineHeight: 1.5 }}>
-          Add modules (USD). Every row includes <span style={{ fontFamily: "DM Mono, monospace", fontSize: 11, color: "#909090" }}>user_id</span> and{" "}
+          Add modules (USD). Every row includes <span style={{ fontFamily: "DM Mono, monospace", fontSize: 11, color: "#909090" }}>user_id</span>,{" "}
+          <span style={{ fontFamily: "DM Mono, monospace", fontSize: 11, color: "#909090" }}>visit_segments_7d</span>, and{" "}
           <span style={{ fontFamily: "DM Mono, monospace", fontSize: 11, color: "#909090" }}>visit_segments_30d</span>. Format follows the marketplace toggle.
         </p>
       </div>
@@ -944,7 +949,7 @@ export default function CompanyDashboard() {
                         : Array.isArray(p.data_fields)
                           ? p.data_fields
                           : [];
-                      const allFieldLabels = [...new Set([...fields, "visit_segments_30d"])];
+                      const allFieldLabels = [...new Set([...fields, "visit_segments_7d", "visit_segments_30d"])];
                       const uses = Array.isArray(p.useCases) ? p.useCases : [];
                       const sigs = p.signals || [];
                       return (

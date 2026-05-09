@@ -95,30 +95,8 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   }
   if (message.type === "RECLAIM_INSIGHT") {
     (async () => {
-      try {
-        const summary = typeof message.summary === "string" ? message.summary : "";
-        if (!summary.trim()) {
-          sendResponse({ ok: false, error: "missing summary" });
-          return;
-        }
-        const ah = await authHeaders();
-        const { res, json, text } = await fetchJsonWithTimeout(
-          `${BACKEND_URL}/api/insight`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...ah },
-            body: JSON.stringify({ summary }),
-          },
-          15000
-        );
-        if (!res.ok) {
-          sendResponse({ ok: false, error: (json && json.error) || text || `insight failed (${res.status})` });
-          return;
-        }
-        sendResponse({ ok: true, insight: json?.insight || "", source: json?.source || null });
-      } catch (err) {
-        sendResponse({ ok: false, error: err?.message ? String(err.message) : "insight failed" });
-      }
+      const summary = typeof message.summary === "string" ? message.summary : "";
+      sendResponse(await postInsightSummary(summary));
     })();
     return true;
   }
@@ -168,31 +146,8 @@ chrome.runtime.onConnectExternal.addListener((port) => {
       (async () => {
         try {
           const summary = typeof msg.summary === "string" ? msg.summary : "";
-          if (!summary.trim()) {
-            port.postMessage({ type: "RECLAIM_INSIGHT_RESULT", payload: { ok: false, error: "missing summary" } });
-            return;
-          }
-          const ah = await authHeaders();
-          const { res, json, text } = await fetchJsonWithTimeout(
-            `${BACKEND_URL}/api/insight`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json", ...ah },
-              body: JSON.stringify({ summary }),
-            },
-            15000
-          );
-          if (!res.ok) {
-            port.postMessage({
-              type: "RECLAIM_INSIGHT_RESULT",
-              payload: { ok: false, error: (json && json.error) || text || `insight failed (${res.status})` },
-            });
-            return;
-          }
-          port.postMessage({
-            type: "RECLAIM_INSIGHT_RESULT",
-            payload: { ok: true, insight: json?.insight || "", source: json?.source || null },
-          });
+          const payload = await postInsightSummary(summary);
+          port.postMessage({ type: "RECLAIM_INSIGHT_RESULT", payload });
         } catch (err) {
           try {
             port.postMessage({
@@ -311,6 +266,27 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
     return { res, json, text };
   } finally {
     clearTimeout(t);
+  }
+}
+
+async function postInsightSummary(summary) {
+  const s = typeof summary === "string" ? summary : "";
+  if (!s.trim()) return { ok: false, error: "missing summary" };
+  try {
+    const ah = await authHeaders();
+    const { res, json, text } = await fetchJsonWithTimeout(
+      `${BACKEND_URL}/api/insight`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...ah },
+        body: JSON.stringify({ summary }),
+      },
+      15000
+    );
+    if (!res.ok) return { ok: false, error: (json && json.error) || text || `insight failed (${res.status})` };
+    return { ok: true, insight: json?.insight || "", source: json?.source || null };
+  } catch (err) {
+    return { ok: false, error: err?.message ? String(err.message) : "insight failed" };
   }
 }
 
@@ -656,6 +632,12 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
   if (contentData.deviceType) session.deviceType = contentData.deviceType;
   if (contentData.timeOfDay) session.timeOfDay = contentData.timeOfDay;
   if (typeof contentData.visitHour === "number" && !session.visitHours.includes(contentData.visitHour)) session.visitHours.push(contentData.visitHour);
+  if (contentData.seoText && typeof contentData.seoText === "string") session.seoText = contentData.seoText.slice(0, 400);
+  if (contentData.metaKeywords && typeof contentData.metaKeywords === "string") session.metaKeywords = contentData.metaKeywords.slice(0, 250);
+  if (contentData.ogType && typeof contentData.ogType === "string") session.ogType = contentData.ogType.slice(0, 60);
+  if (Array.isArray(contentData.schemaTypes) && contentData.schemaTypes.length) {
+    session.schemaTypes = contentData.schemaTypes.map((x) => String(x || "").slice(0, 60)).filter(Boolean).slice(0, 6);
+  }
 
   const classified = await refreshVisitClassification(url, title, domain, session, extracted, contentData.pageType);
   propagateClassificationToAllDaysForDomain(sessions, domain, session);
@@ -679,24 +661,80 @@ async function saveSession(url, title, durationSeconds, contentData = {}) {
 
 // ─── SYNC ─────────────────────────────────────────────────────────────────────
 
-async function syncToBackend() {
-  const userId = await getUserId();
-  const result = await chrome.storage.local.get(["sessions", "totalEarnings", "userLocation", "userProfile"]);
+const SYNC_QUEUE_KEY = "syncQueue";
+const SYNC_QUEUE_CAP = 25;
+const SYNC_MAX_ATTEMPTS = 10;
+
+async function postSyncPayload(payload) {
   const ah = await authHeaders();
   const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort(), 15000);
-  const res = await fetch(`${BACKEND_URL}/api/sync`, {
-    method: "POST", headers: { "Content-Type": "application/json", ...ah },
-    signal: controller.signal,
-    body: JSON.stringify({
-      userId, sessions: result.sessions || {}, totalEarnings: result.totalEarnings || 0,
-      profile: { ...(result.userProfile || {}), location: result.userLocation || {} }
-    })
-  }).finally(() => clearTimeout(tid));
-  if (!res.ok) {
-    let text = "";
-    try { text = await res.text(); } catch { /* ignore */ }
-    throw new Error(text || `sync failed (${res.status})`);
+  const tid = setTimeout(() => controller.abort(), 20000);
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...ah },
+      signal: controller.signal,
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      let text = "";
+      try { text = await res.text(); } catch { /* ignore */ }
+      throw new Error(text || `sync failed (${res.status})`);
+    }
+    const json = await res.json().catch(() => ({}));
+    const ev = json?.enrichment_version;
+    if (ev != null) {
+      await chrome.storage.local.set({ lastServerEnrichmentVersion: ev, lastSyncResponseAt: Date.now() });
+    }
+    return json;
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+async function enqueueSyncPayload(payload) {
+  const prev = await chrome.storage.local.get(SYNC_QUEUE_KEY);
+  const q = Array.isArray(prev[SYNC_QUEUE_KEY]) ? prev[SYNC_QUEUE_KEY] : [];
+  q.push({ payload, attempts: 0, queuedAt: Date.now() });
+  await chrome.storage.local.set({ [SYNC_QUEUE_KEY]: q.slice(-SYNC_QUEUE_CAP) });
+}
+
+async function flushSyncQueue() {
+  const prev = await chrome.storage.local.get(SYNC_QUEUE_KEY);
+  let q = Array.isArray(prev[SYNC_QUEUE_KEY]) ? prev[SYNC_QUEUE_KEY] : [];
+  if (!q.length) return;
+  const next = [];
+  for (const item of q) {
+    const payload = item?.payload;
+    if (!payload) continue;
+    try {
+      await postSyncPayload(payload);
+    } catch {
+      const attempts = (item.attempts || 0) + 1;
+      if (attempts < SYNC_MAX_ATTEMPTS) next.push({ ...item, attempts });
+    }
+  }
+  await chrome.storage.local.set({ [SYNC_QUEUE_KEY]: next });
+}
+
+async function syncToBackend() {
+  await flushSyncQueue();
+  const userId = await getUserId();
+  const result = await chrome.storage.local.get([
+    "sessions", "totalEarnings", "userLocation", "userProfile", "lastServerEnrichmentVersion",
+  ]);
+  const payload = {
+    userId,
+    sessions: result.sessions || {},
+    totalEarnings: result.totalEarnings || 0,
+    profile: { ...(result.userProfile || {}), location: result.userLocation || {} },
+    clientEnrichmentVersion: result.lastServerEnrichmentVersion ?? null,
+  };
+  try {
+    await postSyncPayload(payload);
+  } catch (e) {
+    await enqueueSyncPayload(payload);
+    throw e;
   }
 }
 
@@ -817,6 +855,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     openUserDashboardInBrowser()
       .then(() => sendResponse({ success: true }))
       .catch((err) => sendResponse({ success: false, error: err?.message || String(err) }));
+    return true;
+  }
+  if (message.type === "POPUP_INSIGHT") {
+    postInsightSummary(typeof message.summary === "string" ? message.summary : "").then(sendResponse);
     return true;
   }
   if (message.type !== "CONTENT_DATA") return;

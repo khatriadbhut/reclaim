@@ -244,18 +244,9 @@ async function renderInsight(categories) {
   const summary = Object.entries(categories).map(([cat, data]) => `${cat}: ${Math.round(data.seconds / 60)} minutes`).join(", ");
 
   try {
-    const { userApiToken } = await chrome.storage.local.get(["userApiToken"]);
-    const response = await fetch("http://localhost:3000/api/insight", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(userApiToken ? { Authorization: `Bearer ${userApiToken}` } : {}),
-      },
-      body: JSON.stringify({ summary })
-    });
-    if (!response.ok) throw new Error();
-    const data = await response.json();
-    const insight = data.insight || "Keep browsing — your insight is being generated.";
+    const data = await chrome.runtime.sendMessage({ type: "POPUP_INSIGHT", summary });
+    if (!data?.ok) throw new Error(data?.error || "insight failed");
+    const insight = String(data.insight || "").trim() || "Keep browsing — your insight is being generated.";
     await chrome.storage.local.set({ cachedInsight: insight, insightTimestamp: now });
     insightEl.textContent = insight;
     insightEl.classList.remove("loading");

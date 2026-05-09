@@ -5,6 +5,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import crypto from "crypto";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createDomainCategoryStore, normDomain as normalizeDomainKey } from "./domainCategoryStore.js";
@@ -14,6 +15,12 @@ import { pickStrictWhoisMapping, whoisXmlLookup } from "./whoisXmlCategorizer.js
 import { loadIabContentTaxonomyV3 } from "./iabContentTaxonomy.js";
 import { mapVendorLabelToIabContentId } from "./iabContentMap.js";
 import { audienceSegmentExportFields, computeRollupAudienceSegments } from "./audienceSegments.js";
+import { checkExportAllowed } from "./export/governance.js";
+import { categoryDistributionPctShrunk } from "./export/shrinkage.js";
+import { buildExportDataLabel, getSchemaVersion } from "./export/dataLabel.js";
+import { applyExportProfile, normalizeExportProfile } from "./export/exportProfiles.js";
+import * as persistence from "./db/persistence.js";
+import { normalizePricesFound } from "./enrichment/priceParser.js";
 
 // Always load env from backend/.env (works even if process cwd is repo root)
 dotenv.config({ path: new URL("./.env", import.meta.url) });
@@ -70,6 +77,20 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "200kb" }));
 
 // Rate limiting (dev-friendly defaults; strict in production).
+const syncLimiter = rateLimit({
+  windowMs: 60_000,
+  max: SECURITY_STRICT ? 60 : 2000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator(req) {
+    try {
+      const id = req.body?.userId;
+      return id != null && String(id).trim() ? `u:${String(id).slice(0, 96)}` : `ip:${req.ip || "x"}`;
+    } catch {
+      return `ip:${req.ip || "x"}`;
+    }
+  },
+});
 const generalLimiter = rateLimit({
   windowMs: 60_000,
   max: SECURITY_STRICT ? 120 : 2000,
@@ -88,6 +109,7 @@ const registryReadLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+app.use("/api/sync", syncLimiter);
 app.use("/api/", generalLimiter);
 
 // In-memory storage
@@ -203,25 +225,45 @@ function exportUserId(scope, rawUserId) {
   return crypto.createHmac("sha256", EXPORT_ID_SECRET).update(scoped).digest("hex").slice(0, 24);
 }
 
-function parsePriceAmount(raw) {
-  if (!raw) return null;
-  const cleaned = String(raw).replace(/,/g, "").replace(/[^\d.]/g, "");
-  if (!cleaned) return null;
-  const n = parseFloat(cleaned);
-  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+/** Seconds in calendar day buckets within the last `windowDays` (UTC noon anchoring). */
+function totalSecondsInRollingDays(sessions, windowDays) {
+  const cutoff = cutoffMsForDays(windowDays);
+  let sum = 0;
+  for (const [dayKey, day] of Object.entries(sessions || {})) {
+    const t = dayKeyToUtcMs(dayKey);
+    if (t == null || t < cutoff) continue;
+    for (const s of Object.values(day || {})) sum += Number(s?.totalSeconds) || 0;
+  }
+  return sum;
 }
 
-function normalizePricesFound(pricesFound) {
-  if (!Array.isArray(pricesFound) || !pricesFound.length) return [];
-  return pricesFound.slice(0, 10).map((p) => {
-    if (p && typeof p === "object" && "price" in p) {
-      const raw = String(p.price ?? "").trim();
-      const currency = (p.currency || "INR").toString().toUpperCase().replace(/[^A-Z]/g, "").slice(0, 8) || "INR";
-      return { raw, currency, amount: parsePriceAmount(raw) };
-    }
-    const raw = String(p ?? "").trim();
-    return { raw, currency: "INR", amount: parsePriceAmount(raw) };
-  });
+/** 1–10 from time invested in-window; not semantic “intent to buy”. */
+function engagementScoreFromTotalSeconds(totalSecondsInWindow, windowDays = 30) {
+  const hoursTotal = (Number(totalSecondsInWindow) || 0) / 3600;
+  if (hoursTotal <= 0) return 1;
+  const weeklyEq = hoursTotal * (7 / Math.max(1, windowDays));
+  return Math.min(10, Math.max(1, Math.round(weeklyEq)));
+}
+
+function priceSensitivityTierFromNormalized(normalized) {
+  if (!Array.isArray(normalized) || !normalized.length) return null;
+  let maxInr = 0;
+  for (const p of normalized) {
+    const a = p?.amount;
+    if (a == null || !Number.isFinite(a)) continue;
+    const cur = (p.currency || "INR").toUpperCase();
+    const inr =
+      cur === "USD" ? a * 83 :
+      cur === "EUR" ? a * 89 :
+      cur === "GBP" ? a * 105 :
+      a;
+    if (inr > maxInr) maxInr = inr;
+  }
+  if (maxInr <= 0) return null;
+  if (maxInr < 1000) return "budget";
+  if (maxInr < 10000) return "mid";
+  if (maxInr < 50000) return "premium";
+  return "luxury";
 }
 
 function looksLikeEmail(s) {
@@ -319,9 +361,9 @@ function inferQueryInsightsBase(queries) {
   if (!cleaned.length) {
     return {
       intent_level: "none",
-      intent_reasons: null,
-      intent_topics: null,
-      intent_keyword_hits: null,
+      intent_reasons: [],
+      intent_topics: [],
+      intent_keyword_hits: {},
     };
   }
 
@@ -376,9 +418,9 @@ function inferQueryInsightsBase(queries) {
 
   return {
     intent_level: level,
-    intent_reasons: reasons.length ? reasons.slice(0, 6) : null,
-    intent_topics: topics.length ? topics.slice(0, 6) : null,
-    intent_keyword_hits: reasons.length ? keywordHits : null,
+    intent_reasons: reasons.length ? reasons.slice(0, 6) : [],
+    intent_topics: topics.length ? topics.slice(0, 6) : [],
+    intent_keyword_hits: reasons.length ? keywordHits : {},
   };
 }
 
@@ -392,6 +434,50 @@ function inferQueryInsights(queries, prefix) {
     [`${p}_query_topics`]: base.intent_topics,
     [`${p}_query_keyword_hits`]: base.intent_keyword_hits,
   };
+}
+
+/** Bump when server-side enrichment rules change; clients may use for backfill hints. */
+const SERVER_ENRICHMENT_VERSION = 1;
+
+function collectBehaviorTextHints(sessions, maxHints = 35, categoryFilter = null) {
+  const hints = [];
+  const seen = new Set();
+  for (const day of Object.values(sessions || {})) {
+    for (const s of Object.values(day || {})) {
+      if (categoryFilter && (s.category || "other") !== categoryFilter) continue;
+      const parts = [];
+      if (s.brand) parts.push(String(s.brand));
+      if (s.product) parts.push(String(s.product));
+      if (s.product_type) parts.push(String(s.product_type));
+      if (Array.isArray(s.breadcrumbs)) parts.push(...s.breadcrumbs.slice(0, 4));
+      const dom = s.domain ? String(s.domain).replace(/^www\./i, "") : "";
+      if (dom) parts.push(dom.replace(/\./g, " "));
+      const cat = s.category && s.category !== "other" ? String(s.category) : "";
+      if (cat) parts.push(`${cat}`);
+      const pts = Array.isArray(s.pageTypes) ? s.pageTypes : [];
+      if (pts.includes("checkout")) parts.push("checkout buy pay");
+      if (pts.includes("product")) parts.push("product price");
+      const line = parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+      if (line.length < 4) continue;
+      const key = line.toLowerCase().slice(0, 140);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      hints.push(line.slice(0, 200));
+      if (hints.length >= maxHints) return hints;
+    }
+  }
+  return hints;
+}
+
+function queriesForIntentInference(rawQueries, sessions, categoryFilter = null) {
+  const fromSessions = collectBehaviorTextHints(sessions, 28, categoryFilter);
+  const merged = [...new Set([...(Array.isArray(rawQueries) ? rawQueries : []), ...fromSessions])];
+  return sanitizeQueryList(merged, { maxItems: 24, maxLen: 160 });
+}
+
+function hintSessionsFromRows(sessionRows) {
+  const rows = Array.isArray(sessionRows) ? sessionRows : [];
+  return { _: Object.fromEntries(rows.map((s, i) => [String(i), s])) };
 }
 
 const VALID_CATEGORIES = [
@@ -1628,7 +1714,7 @@ app.post("/api/classify-visit", requireUserAuth, async (req, res) => {
 });
 
 // ─── /api/extract ─────────────────────────────────────────────────────────────
-app.post("/api/extract", requireUserAuth, async (req, res) => {
+app.post("/api/extract", requireUserAuth, aiLimiter, async (req, res) => {
   const { domain, title } = req.body;
   if (!domain) return res.status(400).json({ error: "domain required" });
 
@@ -1710,6 +1796,184 @@ function mergeVisitLogsById(prev = [], incoming = []) {
   const merged = [...map.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const cap = 10000;
   return merged.length > cap ? merged.slice(-cap) : merged;
+}
+
+const AI_TOOL_HOSTS = [
+  "openai.com", "chatgpt.com", "claude.ai", "gemini.google.com", "copilot.microsoft.com",
+  "cursor.com", "cursor.sh", "replit.com", "perplexity.ai", "midjourney.com",
+  "huggingface.co", "mistral.ai",
+];
+
+const DEV_PLATFORM_HOSTS = [
+  "github.com", "stackoverflow.com", "vercel.com", "netlify.com", "leetcode.com",
+  "gitlab.com", "codepen.io",
+];
+
+function domainMatchesHostList(domain, hosts) {
+  const d = normalizeDomain(domain);
+  if (!d) return false;
+  const lower = d.toLowerCase();
+  for (const h of hosts) {
+    const s = String(h).toLowerCase();
+    if (lower === s || lower.endsWith("." + s)) return true;
+  }
+  return false;
+}
+
+function cutoffMsForDays(days) {
+  return Date.now() - days * 86400000;
+}
+
+function dayKeyToUtcMs(dayKey) {
+  if (typeof dayKey !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) return null;
+  const t = Date.parse(`${dayKey}T12:00:00Z`);
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * Visit-style event count in a rolling window (calendar day buckets from `sessions`, or `visitLog` when it has any events in-window).
+ * @param {number} windowDays 7 or 30 are typical for recency vs stability.
+ */
+function visitSegmentsInWindowCount(sessions, visitLogEntries, windowDays) {
+  const cutoff = cutoffMsForDays(windowDays);
+  const logCount = (Array.isArray(visitLogEntries) ? visitLogEntries : []).filter((v) => (v?.ts || 0) >= cutoff).length;
+  if (logCount > 0) return logCount;
+  let sum = 0;
+  for (const [dayKey, day] of Object.entries(sessions || {})) {
+    const t = dayKeyToUtcMs(dayKey);
+    if (t == null || t < cutoff) continue;
+    for (const s of Object.values(day || {})) {
+      const v = s?.visits;
+      if (typeof v === "number" && v > 0) sum += Math.min(v, 500);
+      else sum += 1;
+    }
+  }
+  return sum;
+}
+
+function visitSegments7dCount(sessions, visitLogEntries) {
+  return visitSegmentsInWindowCount(sessions, visitLogEntries, 7);
+}
+
+function visitSegments30dCount(sessions, visitLogEntries) {
+  return visitSegmentsInWindowCount(sessions, visitLogEntries, 30);
+}
+
+function visitSegmentsBaseMeta(sessions, visitLogEntries) {
+  return {
+    visit_segments_7d: visitSegments7dCount(sessions, visitLogEntries),
+    visit_segments_30d: visitSegments30dCount(sessions, visitLogEntries),
+  };
+}
+
+function activeDaysLast30dCount(sessions) {
+  const cutoff = cutoffMsForDays(30);
+  let n = 0;
+  for (const dayKey of Object.keys(sessions || {})) {
+    const t = dayKeyToUtcMs(dayKey);
+    if (t == null || t < cutoff) continue;
+    const day = sessions[dayKey];
+    if (day && typeof day === "object" && Object.keys(day).length) n++;
+  }
+  return n;
+}
+
+function activityPatternFromVisitHours(visitHours) {
+  if (!Array.isArray(visitHours) || !visitHours.length) return "unknown";
+  const buckets = { morning: 0, afternoon: 0, evening: 0, night: 0 };
+  for (const hRaw of visitHours) {
+    const h = Math.floor(Number(hRaw));
+    if (!Number.isFinite(h) || h < 0 || h > 23) continue;
+    if (h >= 5 && h <= 11) buckets.morning++;
+    else if (h >= 12 && h <= 16) buckets.afternoon++;
+    else if (h >= 17 && h <= 21) buckets.evening++;
+    else buckets.night++;
+  }
+  const top = Object.entries(buckets).sort((a, b) => b[1] - a[1])[0];
+  return top[1] > 0 ? top[0] : "mixed";
+}
+
+function mergeIabVendorAndContentTop(iabTop, contentTop, max = 10) {
+  const out = [];
+  const seen = new Set();
+  for (const x of iabTop || []) {
+    const id = x?.id != null ? String(x.id) : null;
+    const k = id ? `id:${id}` : `n:${String(x?.name || "").toLowerCase()}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(x);
+  }
+  for (const x of contentTop || []) {
+    const id = x?.id != null ? String(x.id) : null;
+    const k = id ? `id:${id}` : `n:${String(x?.name || "").toLowerCase()}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(x);
+    if (out.length >= max) break;
+  }
+  return out.slice(0, max);
+}
+
+function returnVisitorDomainsLastNDays(sessions, days) {
+  const cutoff = cutoffMsForDays(days);
+  const byDomain = {};
+  for (const [dayKey, day] of Object.entries(sessions || {})) {
+    const t = dayKeyToUtcMs(dayKey);
+    if (t == null || t < cutoff) continue;
+    for (const s of Object.values(day || {})) {
+      const d = s?.domain;
+      if (!d) continue;
+      const v = typeof s?.visits === "number" ? s.visits : 1;
+      byDomain[d] = (byDomain[d] || 0) + Math.min(v, 100);
+    }
+  }
+  return Object.entries(byDomain)
+    .filter(([, c]) => c >= 3)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([dom]) => dom);
+}
+
+function categoryTrendFromSessions(sessions, topCategory) {
+  const keys = Object.keys(sessions || {})
+    .filter((k) => dayKeyToUtcMs(k) != null)
+    .sort();
+  if (keys.length < 4 || !topCategory) return "stable";
+  const cutoff14 = cutoffMsForDays(14);
+  const cutoff7 = cutoffMsForDays(7);
+  const recentKeys = [];
+  const olderKeys = [];
+  for (const k of keys) {
+    const t = dayKeyToUtcMs(k);
+    if (t == null || t < cutoff14) continue;
+    if (t >= cutoff7) recentKeys.push(k);
+    else olderKeys.push(k);
+  }
+  if (recentKeys.length < 1) return "stable";
+  const sumCat = (dayKeys, cat) => {
+    let sec = 0;
+    for (const dk of dayKeys) {
+      const day = sessions[dk];
+      if (!day) continue;
+      for (const s of Object.values(day)) {
+        if ((s?.category || "other") === cat) sec += s.totalSeconds || 0;
+      }
+    }
+    return sec;
+  };
+  const a = sumCat(recentKeys, topCategory);
+  const b = sumCat(olderKeys, topCategory);
+  if (a > b * 1.25 && a >= 120) return "rising";
+  if (b > a * 1.25 && b >= 120) return "fading";
+  return "stable";
+}
+
+function purchaseFunnelStage(checkoutVisits, productVisits, hasPrices) {
+  if (checkoutVisits > 0) return "hot";
+  if (productVisits > 0 && hasPrices) return "intent";
+  if (productVisits > 0) return "consideration";
+  if (hasPrices) return "consideration";
+  return "awareness";
 }
 
 async function enrichSessionDaysWithIab(sessionDays) {
@@ -1916,15 +2180,22 @@ app.post("/api/sync", requireUserAuth, async (req, res) => {
     ...userProfiles[userId],
     totalEarnings: safeNum(totalEarnings, { min: 0, max: 1e9 }) ?? userProfiles[userId]?.totalEarnings ?? 0,
     lastSync: Date.now(),
+    enrichment_version: SERVER_ENRICHMENT_VERSION,
     ...sanitizeProfile(profile),
     ...(safeStr(collectorVersion, 80) ? { collectorVersion: safeStr(collectorVersion, 80) } : {}),
   };
+
+  persistence
+    .persistUser(userId, mergedSessions, userProfiles[userId], userVisitLogs[userId])
+    .catch((err) => console.error("persistUser:", err?.message || err));
 
   return res.json({
     status: "synced",
     userId,
     visitSegmentsStored: userVisitLogs[userId]?.length || 0,
     enrichment: "scheduled",
+    enrichment_version: SERVER_ENRICHMENT_VERSION,
+    persistence: persistence.isPersistenceEnabled() ? "postgres" : "memory",
   });
 });
 
@@ -1984,7 +2255,8 @@ app.get("/api/profile/:userId", requireUserAuth, async (req, res) => {
     visitHours,
     taxonomy.byId
   );
-  const segments = segExport?.audience_segments ?? computeRollupAudienceSegments(totalCatSeconds, isNightOwl);
+  const segments =
+    segExport.audience_segments.length ? segExport.audience_segments : computeRollupAudienceSegments(totalCatSeconds, isNightOwl);
 
   return res.json({
     userId, profile,
@@ -2073,7 +2345,7 @@ function getPackagesPayload(options = {}) {
         "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "user_id", "visit_segments_7d", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "intent_score", "top_brands", "search_queries",
         "shopping_query_intent_level", "shopping_query_intent_reasons", "shopping_query_topics", "shopping_query_keyword_hits",
         "prices_viewed", "breadcrumbs", "page_types", "scroll_depth",
@@ -2081,7 +2353,7 @@ function getPackagesPayload(options = {}) {
       ],
       sampleData: [
         {
-          user_id: "usr_a7f2k9", visit_segments_30d: 40,
+          user_id: "usr_a7f2k9", visit_segments_7d: 14, visit_segments_30d: 40,
           audience_segments: ["high_intent_shopper", "iab_shopping_core", "iab_technology_core"],
           audience_segments_iab: ["iab_shopping_core", "iab_technology_core"],
           audience_segments_rollup: ["high_intent_shopper"],
@@ -2092,7 +2364,7 @@ function getPackagesPayload(options = {}) {
           visit_frequency: 12, age_range: "18-24", gender: "M", city: "Roorkee", device: "desktop"
         },
         {
-          user_id: "usr_b3m8p1", visit_segments_30d: 28,
+          user_id: "usr_b3m8p1", visit_segments_7d: 10, visit_segments_30d: 28,
           audience_segments: ["high_intent_shopper", "iab_shopping_audience_dominant"],
           audience_segments_iab: ["iab_shopping_audience_dominant", "iab_shopping_core"],
           audience_segments_rollup: ["high_intent_shopper"],
@@ -2103,7 +2375,7 @@ function getPackagesPayload(options = {}) {
           visit_frequency: 8, age_range: "25-34", gender: "M", city: "Delhi", device: "mobile"
         },
         {
-          user_id: "usr_c9x4r6", visit_segments_30d: 51,
+          user_id: "usr_c9x4r6", visit_segments_7d: 18, visit_segments_30d: 51,
           audience_segments: ["high_intent_shopper", "iab_shopping_core", "iab_entertainment_fan"],
           audience_segments_iab: ["iab_shopping_core", "iab_entertainment_fan"],
           audience_segments_rollup: ["high_intent_shopper"],
@@ -2138,7 +2410,7 @@ function getPackagesPayload(options = {}) {
         "IAB Content Taxonomy tier-1 time segments (parallel to internal rollups)"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "user_id", "visit_segments_7d", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "category_distribution_pct", "top_other_domains",
         "top_brands", "all_search_queries", "peak_hour", "device", "avg_scroll_depth",
         "cross_platform_query_intent_level", "cross_platform_query_intent_reasons", "cross_platform_query_topics", "cross_platform_query_keyword_hits",
@@ -2146,7 +2418,7 @@ function getPackagesPayload(options = {}) {
       ],
       sampleData: [
         {
-          user_id: "usr_a7f2k9", visit_segments_30d: 42,
+          user_id: "usr_a7f2k9", visit_segments_7d: 15, visit_segments_30d: 42,
           audience_segments: ["tech_early_adopter", "iab_technology_core", "iab_multi_category_researcher"],
           audience_segments_iab: ["iab_technology_core", "iab_multi_category_researcher", "iab_shopping_core"],
           audience_segments_rollup: ["tech_early_adopter"],
@@ -2159,7 +2431,7 @@ function getPackagesPayload(options = {}) {
           age_range: "18-24", gender: "M", occupation: "Student", city: "Roorkee"
         },
         {
-          user_id: "usr_d2n7q3", visit_segments_30d: 28,
+          user_id: "usr_d2n7q3", visit_segments_7d: 10, visit_segments_30d: 28,
           audience_segments: ["finance_decision_maker", "iab_business_finance_core", "iab_personal_finance_core"],
           audience_segments_iab: ["iab_business_finance_core", "iab_personal_finance_core"],
           audience_segments_rollup: ["finance_decision_maker"],
@@ -2172,7 +2444,7 @@ function getPackagesPayload(options = {}) {
           age_range: "25-34", gender: "M", occupation: "Software Engineer", city: "Bangalore"
         },
         {
-          user_id: "usr_e5k2r8", visit_segments_30d: 51,
+          user_id: "usr_e5k2r8", visit_segments_7d: 18, visit_segments_30d: 51,
           audience_segments: ["high_intent_shopper", "iab_health_wellness", "iab_style_fashion"],
           audience_segments_iab: ["iab_health_wellness", "iab_style_fashion", "iab_shopping_core"],
           audience_segments_rollup: ["high_intent_shopper"],
@@ -2207,14 +2479,14 @@ function getPackagesPayload(options = {}) {
         "Intent scores on finance pages"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "user_id", "visit_segments_7d", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "finance_platforms_visited", "search_queries", "intent_score",
         "finance_query_intent_level", "finance_query_intent_reasons", "finance_query_topics", "finance_query_keyword_hits",
         "visit_frequency", "age_range", "gender", "occupation", "city", "region", "country", "device"
       ],
       sampleData: [
         {
-          user_id: "usr_f1m4k9", visit_segments_30d: 31,
+          user_id: "usr_f1m4k9", visit_segments_7d: 11, visit_segments_30d: 31,
           audience_segments: ["finance_decision_maker", "iab_business_finance_core"],
           audience_segments_iab: ["iab_business_finance_core", "iab_personal_finance_core"],
           audience_segments_rollup: ["finance_decision_maker"],
@@ -2224,7 +2496,7 @@ function getPackagesPayload(options = {}) {
           visit_frequency: 9, age_range: "25-34", gender: "M", occupation: "Software Engineer", city: "Bangalore", device: "desktop"
         },
         {
-          user_id: "usr_g7p2s1", visit_segments_30d: 19,
+          user_id: "usr_g7p2s1", visit_segments_7d: 7, visit_segments_30d: 19,
           audience_segments: ["finance_decision_maker", "iab_finance_content_dominant"],
           audience_segments_iab: ["iab_finance_content_dominant", "iab_business_finance_core"],
           audience_segments_rollup: ["finance_decision_maker"],
@@ -2234,7 +2506,7 @@ function getPackagesPayload(options = {}) {
           visit_frequency: 14, age_range: "28-35", gender: "M", occupation: "Salaried", city: "Pune", device: "mobile"
         },
         {
-          user_id: "usr_h3n8t4", visit_segments_30d: 12,
+          user_id: "usr_h3n8t4", visit_segments_7d: 4, visit_segments_30d: 12,
           audience_segments: ["finance_decision_maker", "iab_personal_finance_core"],
           audience_segments_iab: ["iab_personal_finance_core", "iab_business_finance_core"],
           audience_segments_rollup: ["finance_decision_maker"],
@@ -2266,7 +2538,7 @@ function getPackagesPayload(options = {}) {
         "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "user_id", "visit_segments_7d", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "tech_tools_used", "ai_tools_used", "search_queries",
         "tech_query_intent_level", "tech_query_intent_reasons", "tech_query_topics", "tech_query_keyword_hits",
         "dev_platforms_visited", "tech_browsing_hours", "device", "age_range",
@@ -2274,7 +2546,7 @@ function getPackagesPayload(options = {}) {
       ],
       sampleData: [
         {
-          user_id: "usr_i9q5v2", visit_segments_30d: 36,
+          user_id: "usr_i9q5v2", visit_segments_7d: 13, visit_segments_30d: 36,
           audience_segments: ["tech_early_adopter", "iab_technology_core", "iab_technology_audience_dominant"],
           audience_segments_iab: ["iab_technology_core", "iab_technology_audience_dominant"],
           audience_segments_rollup: ["tech_early_adopter"],
@@ -2286,7 +2558,7 @@ function getPackagesPayload(options = {}) {
           age_range: "18-24", gender: "M", occupation: "Student", city: "Roorkee"
         },
         {
-          user_id: "usr_j2w7b6", visit_segments_30d: 44,
+          user_id: "usr_j2w7b6", visit_segments_7d: 15, visit_segments_30d: 44,
           audience_segments: ["tech_early_adopter", "iab_technology_core"],
           audience_segments_iab: ["iab_technology_core", "iab_gaming_enthusiast"],
           audience_segments_rollup: ["tech_early_adopter"],
@@ -2298,7 +2570,7 @@ function getPackagesPayload(options = {}) {
           age_range: "25-34", gender: "M", occupation: "Software Engineer", city: "Hyderabad"
         },
         {
-          user_id: "usr_k4r1m8", visit_segments_30d: 22,
+          user_id: "usr_k4r1m8", visit_segments_7d: 8, visit_segments_30d: 22,
           audience_segments: ["tech_early_adopter", "iab_technology_core"],
           audience_segments_iab: ["iab_technology_core", "iab_style_fashion"],
           audience_segments_rollup: ["tech_early_adopter"],
@@ -2332,7 +2604,7 @@ function getPackagesPayload(options = {}) {
         "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "user_id", "visit_segments_7d", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "property_platforms_visited", "search_queries", "property_types",
         "property_query_intent_level", "property_query_intent_reasons", "property_query_topics", "property_query_keyword_hits",
         "locations_searched", "intent_score", "visit_frequency", "age_range",
@@ -2340,7 +2612,7 @@ function getPackagesPayload(options = {}) {
       ],
       sampleData: [
         {
-          user_id: "usr_l6s3n1", visit_segments_30d: 24,
+          user_id: "usr_l6s3n1", visit_segments_7d: 8, visit_segments_30d: 24,
           audience_segments: ["property_seeker", "iab_real_estate_intender"],
           audience_segments_iab: ["iab_real_estate_intender"],
           audience_segments_rollup: ["property_seeker"],
@@ -2351,7 +2623,7 @@ function getPackagesPayload(options = {}) {
           age_range: "25-34", gender: "M", occupation: "Engineer", city: "Roorkee", device: "mobile"
         },
         {
-          user_id: "usr_m8t5p3", visit_segments_30d: 18,
+          user_id: "usr_m8t5p3", visit_segments_7d: 6, visit_segments_30d: 18,
           audience_segments: ["property_seeker", "iab_real_estate_intender", "iab_travel_core"],
           audience_segments_iab: ["iab_real_estate_intender", "iab_travel_core"],
           audience_segments_rollup: ["property_seeker"],
@@ -2362,7 +2634,7 @@ function getPackagesPayload(options = {}) {
           age_range: "22-28", gender: "F", occupation: "Working Professional", city: "Mumbai", device: "mobile"
         },
         {
-          user_id: "usr_n2v4k7", visit_segments_30d: 31,
+          user_id: "usr_n2v4k7", visit_segments_7d: 11, visit_segments_30d: 31,
           audience_segments: ["property_seeker", "iab_real_estate_intender", "iab_automotive_intender"],
           audience_segments_iab: ["iab_real_estate_intender", "iab_automotive_intender"],
           audience_segments_rollup: ["property_seeker"],
@@ -2394,7 +2666,7 @@ function getPackagesPayload(options = {}) {
         "Audience segments: internal rollups + IAB Content Taxonomy tier-1 time"
       ],
       dataFields: [
-        "user_id", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
+        "user_id", "visit_segments_7d", "visit_segments_30d", "audience_segments", "audience_segments_iab", "audience_segments_rollup",
         "peak_shopping_hours", "device", "late_night_categories",
         "late_night_brands", "late_night_search_queries",
         "late_night_query_intent_level", "late_night_query_intent_reasons", "late_night_query_topics",
@@ -2404,7 +2676,7 @@ function getPackagesPayload(options = {}) {
       ],
       sampleData: [
         {
-          user_id: "usr_o3x6q9", visit_segments_30d: 38,
+          user_id: "usr_o3x6q9", visit_segments_7d: 13, visit_segments_30d: 38,
           audience_segments: ["night_owl_shopper", "high_intent_shopper", "iab_food_drink_enthusiast", "iab_entertainment_fan"],
           audience_segments_iab: ["iab_food_drink_enthusiast", "iab_entertainment_fan", "iab_shopping_core"],
           audience_segments_rollup: ["night_owl_shopper", "high_intent_shopper"],
@@ -2420,7 +2692,7 @@ function getPackagesPayload(options = {}) {
           age_range: "18-24", gender: "F", occupation: "Student", city: "Delhi"
         },
         {
-          user_id: "usr_p7y1s5", visit_segments_30d: 22,
+          user_id: "usr_p7y1s5", visit_segments_7d: 8, visit_segments_30d: 22,
           audience_segments: ["night_owl_shopper", "tech_early_adopter", "iab_technology_core"],
           audience_segments_iab: ["iab_technology_core", "iab_shopping_core"],
           audience_segments_rollup: ["night_owl_shopper", "tech_early_adopter"],
@@ -2436,7 +2708,7 @@ function getPackagesPayload(options = {}) {
           age_range: "18-24", gender: "M", occupation: "Student", city: "Pune"
         },
         {
-          user_id: "usr_q5w8r2", visit_segments_30d: 45,
+          user_id: "usr_q5w8r2", visit_segments_7d: 16, visit_segments_30d: 45,
           audience_segments: ["night_owl_shopper", "high_intent_shopper", "iab_food_drink_enthusiast"],
           audience_segments_iab: ["iab_food_drink_enthusiast", "iab_shopping_core"],
           audience_segments_rollup: ["night_owl_shopper", "high_intent_shopper"],
@@ -2505,14 +2777,12 @@ async function buildPackageRows(packageId, opts = {}) {
     const totalHours = (totalSecAll / 3600).toFixed(1);
     const lateNightHours = visitHours.filter(h => h >= 22 || h <= 2);
 
-    const visitCutoff = Date.now() - 30 * 86400000;
-    const visitSegments30d = (userVisitLogs[uid] || []).filter(v => (v.ts || 0) >= visitCutoff).length;
-    const visitMeta = { visit_segments_30d: visitSegments30d };
+    const visitMeta = visitSegmentsBaseMeta(sessions, userVisitLogs[uid]);
     const segFields = audienceSegmentExportFields(sessions, totalCatSeconds, totalSecAll, visitHours, taxonomy.byId);
-    const segCols = segFields || {
-      audience_segments: null,
-      audience_segments_iab: null,
-      audience_segments_rollup: null,
+    const segCols = {
+      audience_segments: segFields.audience_segments,
+      audience_segments_iab: segFields.audience_segments_iab,
+      audience_segments_rollup: segFields.audience_segments_rollup,
     };
 
     const dem = {
@@ -2535,7 +2805,11 @@ async function buildPackageRows(packageId, opts = {}) {
         const breadcrumbsRaw = shoppingSessions.find(s => s.breadcrumbs?.length)?.breadcrumbs || [];
         const breadcrumbs = sanitizeBreadcrumbs(breadcrumbsRaw, { maxItems: 8 });
         const shoppingQueriesRaw = shoppingSessions.flatMap(s => Array.isArray(s.searchQueries) ? s.searchQueries : []);
-        const qList = sanitizeQueryList([...new Set(shoppingQueriesRaw)], { maxItems: 10 });
+        const qList = queriesForIntentInference(
+          shoppingQueriesRaw,
+          hintSessionsFromRows(shoppingSessions),
+          "shopping"
+        );
         const qInsights = inferQueryInsights(qList, "shopping");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -2557,16 +2831,12 @@ async function buildPackageRows(packageId, opts = {}) {
       }
       case "cross_platform_behavioral": {
         if (Object.keys(totalCatSeconds).length < 3) continue;
-        const total = Object.values(totalCatSeconds).reduce((a, b) => a + b, 0);
-        const catDist = {};
-        for (const [c, sec] of Object.entries(totalCatSeconds)) {
-          catDist[c] = Math.round((sec / total) * 100);
-        }
+        const catDist = categoryDistributionPctShrunk(totalCatSeconds);
         const otherHosts = [...new Set((allDomains.other || []).map(d => String(d).replace(/^www\./i, "")))].slice(0, 10);
         const hourCounts = {};
         visitHours.forEach(h => { hourCounts[h] = (hourCounts[h] || 0) + 1; });
         const peakHour = Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
-        const allQ = sanitizeQueryList([...new Set(allSearchQueries)], { maxItems: 20 });
+        const allQ = queriesForIntentInference(allSearchQueries, sessions);
         const qInsights = inferQueryInsights(allQ, "cross_platform");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -2596,7 +2866,7 @@ async function buildPackageRows(packageId, opts = {}) {
         const finIntent = Object.values(sessions).flatMap(d =>
           Object.values(d).filter(s => s.category === "finance").map(s => s.intent_score || 3)
         );
-        const qList = sanitizeQueryList(finQueries, { maxItems: 10 });
+        const qList = queriesForIntentInference(finQueries, sessions, "finance");
         const qInsights = inferQueryInsights(qList, "finance");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -2619,13 +2889,13 @@ async function buildPackageRows(packageId, opts = {}) {
       case "tech_early_adopters": {
         if ((totalCatSeconds.technology || 0) < 1800) continue;
         const techDomains = allDomains.technology || [];
-        const aiTools = techDomains.filter(d => ["claude.ai", "openai.com", "midjourney.com", "perplexity.ai"].includes(d));
-        const devPlatforms = techDomains.filter(d => ["github.com", "stackoverflow.com", "vercel.com", "netlify.com", "leetcode.com"].includes(d));
+        const aiTools = techDomains.filter((d) => domainMatchesHostList(d, AI_TOOL_HOSTS));
+        const devPlatforms = techDomains.filter((d) => domainMatchesHostList(d, DEV_PLATFORM_HOSTS));
         const techSessions = Object.values(sessions).flatMap(d =>
           Object.values(d).filter(s => s.category === "technology")
         );
         const techQueriesRaw = techSessions.flatMap(s => Array.isArray(s.searchQueries) ? s.searchQueries : []);
-        const qList = sanitizeQueryList([...new Set(techQueriesRaw)], { maxItems: 10 });
+        const qList = queriesForIntentInference(techQueriesRaw, sessions, "technology");
         const qInsights = inferQueryInsights(qList, "tech");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -2653,7 +2923,7 @@ async function buildPackageRows(packageId, opts = {}) {
         const reQueries = allSearchQueries.filter(q =>
           /bhk|flat|apartment|villa|plot|rent|sale|property/i.test(q)
         );
-        const qList = sanitizeQueryList(reQueries, { maxItems: 10 });
+        const qList = queriesForIntentInference(reQueries, sessions, "realestate");
         const qInsights = inferQueryInsights(qList, "property");
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -2701,9 +2971,11 @@ async function buildPackageRows(packageId, opts = {}) {
           [...new Set(commerceSessions.flatMap(s => Array.isArray(s.searchQueries) ? s.searchQueries : []))].filter((q) => purchaseQueryRe.test(String(q || ""))),
           { maxItems: 12 }
         );
-        if (!commerceQueries.length && !hasPricesSeen && !hasCheckout) continue;
+        const lateHints = collectBehaviorTextHints(hintSessionsFromRows(commerceSessions), 18, null);
+        const mergedLate = sanitizeQueryList([...new Set([...commerceQueries, ...lateHints])], { maxItems: 16 });
+        if (!mergedLate.length && !hasPricesSeen && !hasCheckout) continue;
 
-        const queryInsights = inferQueryInsights(commerceQueries, "late_night");
+        const queryInsights = inferQueryInsights(mergedLate, "late_night");
 
         rows.push({
           user_id: uidOut, ...visitMeta,
@@ -2753,7 +3025,8 @@ const CUSTOM_CATEGORY_EXPORT_COLUMNS = {
     "top_categories",
     "total_browsing_hours",
     "time_spent_per_category",
-    "active_days",
+    "active_days_last_30d",
+    "category_trend",
     "peak_hour",
     "iab_provider",
     "iab_taxonomy",
@@ -2767,10 +3040,9 @@ const CUSTOM_CATEGORY_EXPORT_COLUMNS = {
     "iab_content_primary_name",
     "iab_content_primary_confidence",
     "iab_content_primary_weight_seconds",
-    "iab_content_affinity_top",
   ],
   purchase_intent: [
-    "max_intent_score",
+    "engagement_score",
     "intent_by_vertical",
     "price_ranges_viewed",
     "intent_search_queries",
@@ -2779,7 +3051,10 @@ const CUSTOM_CATEGORY_EXPORT_COLUMNS = {
     "intent_query_topics",
     "intent_query_keyword_hits",
   ],
-  brand_affinity: ["top_brands_researched", "premium_brands", "premium_brand_flag", "brand_cross_site_visits"],
+  brand_affinity: [
+    "top_brands_researched", "premium_brands", "premium_brand_flag", "brand_cross_site_visits",
+    "return_visitor_domains",
+  ],
   content_signals: [
     "page_types",
     "search_queries",
@@ -2788,14 +3063,15 @@ const CUSTOM_CATEGORY_EXPORT_COLUMNS = {
     "content_query_topics",
     "content_query_keyword_hits",
     "max_scroll_depth",
-    "breadcrumbs",
-    "keywords",
   ],
-  temporal_patterns: ["peak_hour", "is_night_owl", "late_night_hours", "hour_distribution", "active_days"],
-  ecommerce_signals: ["shopping_domains", "prices_found", "checkout_visits", "product_page_visits", "shopping_brands"],
+  temporal_patterns: ["peak_hour", "is_night_owl", "late_night_hours", "activity_pattern", "active_days_last_30d"],
+  ecommerce_signals: [
+    "shopping_domains", "prices_found", "checkout_visits", "product_page_visits",
+    "price_sensitivity_tier", "purchase_funnel_stage",
+  ],
   finance_signals: [
-    "finance_browsing_hours", "finance_intent_level", "finance_decision_maker", "finance_domains_visited",
-    "finance_search_queries", "max_finance_intent_score",
+    "finance_browsing_hours", "finance_intent_level", "finance_decision_maker",
+    "finance_domain_visit_count", "max_finance_intent_score",
     "finance_query_intent_level", "finance_query_intent_reasons", "finance_query_topics", "finance_query_keyword_hits",
   ],
   tech_affinity: [
@@ -2831,6 +3107,8 @@ function computeCustomPackagePriceUsd(ids) {
 const PREMIUM_BRANDS_LOWER = new Set([
   "apple", "samsung", "sony", "bmw", "mercedes", "nike", "adidas",
   "rolex", "lv", "gucci", "netflix", "google", "microsoft", "amazon",
+  "tanishq", "titan", "manyavar", "royal enfield", "croma", "vijay sales",
+  "fabindia", "louis philippe", "allen solly", "boat", "oneplus",
 ]);
 
 async function buildCustomPackageRows(categoryIds, opts = {}) {
@@ -2859,7 +3137,6 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
     let allKeywords = [];
     let checkoutVisits = 0;
     let productVisits = 0;
-    let intentScores = [];
 
     for (const day of Object.values(sessions)) {
       for (const s of Object.values(day)) {
@@ -2874,7 +3151,6 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
         if (s.breadcrumbs) allBreadcrumbs.push(...s.breadcrumbs);
         if (s.pageTypes) allPageTypes.push(...s.pageTypes);
         if (s.keywords) allKeywords.push(...s.keywords);
-        if (s.intent_score) intentScores.push(s.intent_score);
         const pts = Array.isArray(s.pageTypes) ? s.pageTypes : [];
         if (pts.includes("checkout")) checkoutVisits++;
         if (pts.includes("product")) productVisits++;
@@ -2886,6 +3162,8 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
     const totalSecondsAll = Object.values(totalCatSeconds).reduce((a, b) => a + b, 0);
     if (totalSecondsAll === 0) continue;
 
+    const totalSecondsLast30 = totalSecondsInRollingDays(sessions, 30);
+
     const topBrands = Object.entries(allBrands).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([b]) => b);
     const lateNightHrs = visitHours.filter(h => h >= 22 || h <= 2);
     const peakHour = visitHours.length
@@ -2896,8 +3174,7 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
         })()
       : null;
 
-    const visitCutoff = Date.now() - 30 * 86400000;
-    const visitSegments30d = (userVisitLogs[uid] || []).filter(v => (v.ts || 0) >= visitCutoff).length;
+    const visitMetaBase = visitSegmentsBaseMeta(sessions, userVisitLogs[uid]);
 
     const dem = {
       age_range: profile.age_range || user.profile?.age_range || null,
@@ -2908,7 +3185,7 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
       country: profile.location?.country || null,
     };
 
-    const row = { user_id: uidOut, visit_segments_30d: visitSegments30d };
+    const row = { user_id: uidOut, ...visitMetaBase };
     let hasAnyData = false;
 
     if (catSet.has("demographics")) {
@@ -3014,12 +3291,15 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
           }
         }
         const contentTop = [...contentAffinityCounts.values()].sort((a, b) => b.hits - a.hits).slice(0, 8);
+        const iabTopMerged = mergeIabVendorAndContentTop(iabTop, contentTop, 10);
+        const topCatForTrend = topCats[0] || null;
 
         Object.assign(row, {
           top_categories: topCats,
           total_browsing_hours: parseFloat((totalSecondsAll / 3600).toFixed(2)),
           time_spent_per_category: catHours,
-          active_days: Object.keys(sessions).slice(-7),
+          active_days_last_30d: activeDaysLast30dCount(sessions),
+          category_trend: categoryTrendFromSessions(sessions, topCatForTrend),
           peak_hour: peakHour,
           ...(best
             ? {
@@ -3038,7 +3318,7 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
                 iab_primary_confidence: null,
                 iab_primary_weight_seconds: null,
               }),
-          iab_top_categories: iabTop.length ? iabTop : null,
+          iab_top_categories: iabTopMerged.length ? iabTopMerged : [],
           iab_content_taxonomy_version: contentTaxonomyVersion,
           ...(bestContent
             ? {
@@ -3053,36 +3333,33 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
                 iab_content_primary_confidence: null,
                 iab_content_primary_weight_seconds: null,
               }),
-          iab_content_affinity_top: contentTop.length ? contentTop : null,
         });
         hasAnyData = true;
       }
     }
 
     if (catSet.has("purchase_intent")) {
-      const maxIntent = intentScores.length ? Math.max(...intentScores) : null;
       const intentByVertical = {};
       for (const [cat, sec] of Object.entries(totalCatSeconds)) {
         if (sec > 300) {
           intentByVertical[cat] = sec > 1800 ? "high" : sec > 900 ? "medium" : "low";
         }
       }
-      if (maxIntent !== null || Object.keys(intentByVertical).length) {
-        const qList = sanitizeQueryList([...new Set(allSearchQueries)], { maxItems: 10 });
-        const qInsights = inferQueryInsights(qList, "intent");
-        Object.assign(row, {
-          max_intent_score: maxIntent,
-          intent_by_vertical: intentByVertical,
-          price_ranges_viewed: normalizePricesFound(allPricesFound).slice(0, 8),
-          intent_search_queries: qList,
-          ...qInsights,
-        });
-        hasAnyData = true;
-      }
+      const qList = queriesForIntentInference(allSearchQueries, sessions);
+      const qInsights = inferQueryInsights(qList, "intent");
+      Object.assign(row, {
+        engagement_score: engagementScoreFromTotalSeconds(totalSecondsLast30),
+        intent_by_vertical: intentByVertical,
+        price_ranges_viewed: normalizePricesFound(allPricesFound).slice(0, 8),
+        intent_search_queries: qList,
+        ...qInsights,
+      });
+      hasAnyData = true;
     }
 
     if (catSet.has("brand_affinity")) {
-      if (topBrands.length) {
+      const returnVis = returnVisitorDomainsLastNDays(sessions, 7);
+      if (topBrands.length || returnVis.length) {
         const premiumFound = topBrands.filter(b => PREMIUM_BRANDS_LOWER.has((b || "").toLowerCase()));
         Object.assign(row, {
           top_brands_researched: topBrands,
@@ -3091,22 +3368,21 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
           brand_cross_site_visits: Object.fromEntries(
             Object.entries(allBrands).sort((a, b) => b[1] - a[1]).slice(0, 8)
           ),
+          return_visitor_domains: returnVis,
         });
         hasAnyData = true;
       }
     }
 
     if (catSet.has("content_signals")) {
-      if (allPageTypes.length || allSearchQueries.length || allBreadcrumbs.length) {
-        const qList = sanitizeQueryList([...new Set(allSearchQueries)], { maxItems: 15 });
+      if (allPageTypes.length || allSearchQueries.length) {
+        const qList = queriesForIntentInference(allSearchQueries, sessions);
         const qInsights = inferQueryInsights(qList, "content");
         Object.assign(row, {
           page_types: [...new Set(allPageTypes)],
           search_queries: qList,
           ...qInsights,
           max_scroll_depth: maxScrollDepth,
-          breadcrumbs: sanitizeBreadcrumbs([...new Set(allBreadcrumbs)], { maxItems: 10 }),
-          keywords: sanitizeKeywordList([...new Set(allKeywords)], { maxItems: 20 }),
         });
         hasAnyData = true;
       }
@@ -3114,14 +3390,12 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
 
     if (catSet.has("temporal_patterns")) {
       if (visitHours.length) {
-        const hourDist = {};
-        visitHours.forEach(h => { hourDist[h] = (hourDist[h] || 0) + 1; });
         Object.assign(row, {
           peak_hour: peakHour,
           is_night_owl: lateNightHrs.length > 0,
           late_night_hours: [...new Set(lateNightHrs)].map(h => `${h}:00`),
-          hour_distribution: hourDist,
-          active_days: Object.keys(sessions).slice(-7),
+          activity_pattern: activityPatternFromVisitHours(visitHours),
+          active_days_last_30d: activeDaysLast30dCount(sessions),
         });
         hasAnyData = true;
       }
@@ -3130,12 +3404,14 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
     if (catSet.has("ecommerce_signals")) {
       const shoppingDomains = allDomains.shopping || [];
       if (shoppingDomains.length || checkoutVisits || productVisits) {
+        const normPrices = normalizePricesFound(allPricesFound).slice(0, 10);
         Object.assign(row, {
           shopping_domains: [...new Set(shoppingDomains)].slice(0, 8),
-          prices_found: normalizePricesFound(allPricesFound).slice(0, 10),
+          prices_found: normPrices,
           checkout_visits: checkoutVisits,
           product_page_visits: productVisits,
-          shopping_brands: topBrands.slice(0, 5),
+          price_sensitivity_tier: priceSensitivityTierFromNormalized(normPrices) || "unknown",
+          purchase_funnel_stage: purchaseFunnelStage(checkoutVisits, productVisits, normPrices.length > 0),
         });
         hasAnyData = true;
       }
@@ -3148,7 +3424,7 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
         const finQueries = allSearchQueries.filter(q =>
           /loan|mutual|sip|insurance|emi|invest|fund|bank|credit|demat|nifty|sensex/i.test(q)
         );
-        const qList = sanitizeQueryList(finQueries, { maxItems: 10 });
+        const qList = queriesForIntentInference(finQueries, sessions, "finance");
         const qInsights = inferQueryInsights(qList, "finance");
         const finIntents = Object.values(sessions).flatMap(d =>
           Object.values(d).filter(s => s.category === "finance").map(s => s.intent_score || 3)
@@ -3157,10 +3433,9 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
           finance_browsing_hours: parseFloat((finSec / 3600).toFixed(2)),
           finance_intent_level: finSec > 1800 ? "high" : finSec > 900 ? "medium" : "low",
           finance_decision_maker: finSec > 900,
-          finance_domains_visited: [...new Set(finDomains)].slice(0, 6),
-          finance_search_queries: qList,
+          finance_domain_visit_count: new Set(finDomains).size,
           ...qInsights,
-          max_finance_intent_score: finIntents.length ? Math.max(...finIntents) : null,
+          max_finance_intent_score: finIntents.length ? Math.max(...finIntents) : 0,
         });
         hasAnyData = true;
       }
@@ -3170,12 +3445,8 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
       const techSec = totalCatSeconds.technology || 0;
       const techDomains = allDomains.technology || [];
       if (techSec > 0 || techDomains.length) {
-        const aiTools = [...new Set(techDomains.filter(d =>
-          ["claude.ai", "openai.com", "midjourney.com", "perplexity.ai", "gemini.google.com"].includes(d)
-        ))];
-        const devTools = [...new Set(techDomains.filter(d =>
-          ["github.com", "stackoverflow.com", "vercel.com", "netlify.com", "leetcode.com"].includes(d)
-        ))];
+        const aiTools = [...new Set(techDomains.filter((d) => domainMatchesHostList(d, AI_TOOL_HOSTS)))];
+        const devTools = [...new Set(techDomains.filter((d) => domainMatchesHostList(d, DEV_PLATFORM_HOSTS)))];
         const techNameSet = new Set(["apple", "google", "microsoft", "samsung", "sony", "intel", "nvidia"]);
         Object.assign(row, {
           tech_browsing_hours: parseFloat((techSec / 3600).toFixed(2)),
@@ -3198,12 +3469,12 @@ async function buildCustomPackageRows(categoryIds, opts = {}) {
         visitHours,
         taxonomy.byId
       );
-      Object.assign(row, segFields || {
-        audience_segments: null,
-        audience_segments_iab: null,
-        audience_segments_rollup: null,
+      Object.assign(row, {
+        audience_segments: segFields.audience_segments,
+        audience_segments_iab: segFields.audience_segments_iab,
+        audience_segments_rollup: segFields.audience_segments_rollup,
       });
-      if (segFields) hasAnyData = true;
+      hasAnyData = true;
     }
 
     if (hasAnyData) rows.push(row);
@@ -3230,6 +3501,27 @@ function csvEncodeScalar(v) {
   if (/^[=+\-@]/.test(s)) s = `'${s}`;
   if (/[",\n]/.test(s)) return `"${s.replaceAll("\"", "\"\"")}"`;
   return s;
+}
+
+function curatedPackageDataFields(packageId) {
+  const pkgs = getPackagesPayload({ includeUserCounts: false });
+  const p = pkgs.find((x) => x.id === packageId);
+  return Array.isArray(p?.dataFields) ? p.dataFields : [];
+}
+
+function customExportColumnList(categoryIds) {
+  const base = ["user_id", "visit_segments_7d", "visit_segments_30d"];
+  const seen = new Set(base);
+  const cols = [...base];
+  for (const id of categoryIds || []) {
+    for (const c of CUSTOM_CATEGORY_EXPORT_COLUMNS[id] || []) {
+      if (!seen.has(c)) {
+        seen.add(c);
+        cols.push(c);
+      }
+    }
+  }
+  return cols;
 }
 
 function sendCsvDownload(res, filenameBase, rows) {
@@ -3268,26 +3560,30 @@ app.get("/api/company/purchases", companyCors(), requireCompanyAuth, (req, res) 
 
 app.post("/api/company/purchase", companyCors(), requireCompanyOrigin, requireCompanyAuth, async (req, res) => {
   const { company } = req.companyAuth;
-  const { packageId, format = "csv" } = req.body || {};
+  const { packageId, format = "csv", exportProfile: exportProfileRaw } = req.body || {};
   if (!packageId) return res.status(400).json({ error: "packageId required" });
   if (!["csv", "json"].includes(format)) return res.status(400).json({ error: "format must be csv or json" });
+  const exportProfile = normalizeExportProfile(exportProfileRaw);
 
   const rows = await buildPackageRows(packageId, { companyScope: company.id });
   if (!rows.length) return res.status(404).json({ error: "no data available for this package yet" });
+  const gate = checkExportAllowed(rows.length);
+  if (!gate.ok) return res.status(403).json(gate);
   const purchaseId = crypto.randomBytes(12).toString("hex");
   const rec = {
-    id: purchaseId, packageId, format, createdAt: Date.now(), rowCount: rows.length, isCustom: false,
+    id: purchaseId, packageId, format, exportProfile, createdAt: Date.now(), rowCount: rows.length, isCustom: false,
   };
   if (!companyPurchases[company.id]) companyPurchases[company.id] = [];
   companyPurchases[company.id].push(rec);
 
   const downloadUrl = `/api/company/download/${purchaseId}?format=${encodeURIComponent(format)}`;
-  return res.json({ purchaseId, rowCount: rows.length, downloadUrl });
+  return res.json({ purchaseId, rowCount: rows.length, downloadUrl, exportProfile });
 });
 
 app.post("/api/company/purchase/custom", companyCors(), requireCompanyOrigin, requireCompanyAuth, async (req, res) => {
   const { company } = req.companyAuth;
-  const { categoryIds, signals, format = "csv" } = req.body || {};
+  const { categoryIds, signals, format = "csv", exportProfile: exportProfileRaw } = req.body || {};
+  const exportProfile = normalizeExportProfile(exportProfileRaw);
 
   const parsed = parseCustomCategoryIds(categoryIds);
   if (!parsed.ok) return res.status(400).json({ error: parsed.error });
@@ -3302,6 +3598,8 @@ app.post("/api/company/purchase/custom", companyCors(), requireCompanyOrigin, re
   if (!rows.length) {
     return res.status(404).json({ error: "no matching user data for the selected categories yet" });
   }
+  const gate = checkExportAllowed(rows.length);
+  if (!gate.ok) return res.status(403).json(gate);
 
   const purchaseId = crypto.randomBytes(12).toString("hex");
   const customLabel = ids.join(", ");
@@ -3313,6 +3611,7 @@ app.post("/api/company/purchase/custom", companyCors(), requireCompanyOrigin, re
     signals: Array.isArray(signals) ? signals : [],
     price: priceUsd,
     format,
+    exportProfile,
     createdAt: Date.now(),
     rowCount: rows.length,
     isCustom: true,
@@ -3322,13 +3621,14 @@ app.post("/api/company/purchase/custom", companyCors(), requireCompanyOrigin, re
   companyPurchases[company.id].push(rec);
 
   const downloadUrl = `/api/company/download/${purchaseId}?format=${encodeURIComponent(format)}`;
-  return res.json({ purchaseId, rowCount: rows.length, downloadUrl, priceUsd });
+  return res.json({ purchaseId, rowCount: rows.length, downloadUrl, priceUsd, exportProfile });
 });
 
 app.get("/api/company/custom-pricing", companyCors(), requireCompanyAuth, (_req, res) => {
   return res.json({
     baseUsd: CUSTOM_PACKAGE_BASE_USD,
-    baseColumns: ["user_id", "visit_segments_30d"],
+    baseColumns: ["user_id", "visit_segments_7d", "visit_segments_30d"],
+    exportProfiles: ["analytics", "activation"],
     categories: Object.entries(CUSTOM_CATEGORY_PRICE_USD).map(([id, priceUsd]) => ({
       id,
       priceUsd,
@@ -3356,17 +3656,54 @@ app.get("/api/company/download/:purchaseId", companyCors(), requireCompanyAuth, 
     ? await buildCustomPackageRows(purchase.categoryIds || [], { companyScope: company.id })
     : await buildPackageRows(purchase.packageId, { companyScope: company.id });
 
-  if (format === "csv") {
-    return sendCsvDownload(res, filenameBase, rows);
+  if (!rows.length) {
+    return res.status(404).json({ error: "no data available for this export" });
   }
-  return sendJsonDownload(res, filenameBase, {
-    schema_version: 1,
+  const gate = checkExportAllowed(rows.length);
+  if (!gate.ok) return res.status(403).json(gate);
+
+  const exportProfile = normalizeExportProfile(purchase.exportProfile);
+  const outRows = applyExportProfile(rows, exportProfile);
+
+  const panelN = Object.keys(userSessions).length;
+  const exportColumns = purchase.isCustom
+    ? customExportColumnList(purchase.categoryIds)
+    : curatedPackageDataFields(purchase.packageId);
+
+  const includeDataLabel = String(process.env.RECLAIM_EXPORT_DATA_LABEL || "").trim() === "1";
+
+  if (format === "csv") {
+    return sendCsvDownload(res, filenameBase, outRows);
+  }
+  const payload = {
+    schema_version: getSchemaVersion(),
+    enrichment_version: SERVER_ENRICHMENT_VERSION,
     generated_at: new Date().toISOString(),
+    export_profile: exportProfile,
     label: purchase.customLabel || purchase.packageId,
-    rowCount: rows.length,
-    data: rows,
+    rowCount: outRows.length,
+    data: outRows,
     ...(purchase.isCustom ? { categoryIds: purchase.categoryIds, signals: purchase.signals } : { packageId: purchase.packageId }),
-  });
+  };
+  if (includeDataLabel) {
+    payload.data_label = buildExportDataLabel({
+      purchase,
+      rows: outRows,
+      panelUniverseSize: panelN,
+      exportColumns,
+    });
+  }
+  return sendJsonDownload(res, filenameBase, payload);
+});
+
+app.get("/api/company/data-label-template", companyCors(), requireCompanyAuth, (_req, res) => {
+  try {
+    const p = path.join(__dirname, "data-label-template.json");
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    return res.send(fs.readFileSync(p, "utf8"));
+  } catch {
+    return res.status(500).json({ error: "template unavailable" });
+  }
 });
 
 function sanitizeInsightSummary(raw) {
@@ -3396,14 +3733,50 @@ app.post("/api/insight", requireUserAuth, aiLimiter, async (req, res) => {
 });
 
 // ─── /api/health ──────────────────────────────────────────────────────────────
-app.get("/api/health", (req, res) => {
-  return res.json({ status: "ok" });
+app.get("/api/health", async (_req, res) => {
+  const database = await persistence.healthCheck();
+  return res.json({
+    status: "ok",
+    enrichment_version: SERVER_ENRICHMENT_VERSION,
+    persistence: persistence.isPersistenceEnabled() ? "postgres" : "memory",
+    database,
+  });
 });
 
-app.listen(PORT, () => {
-  console.log(`Reclaim backend listening on port ${PORT} (NODE_ENV=${process.env.NODE_ENV || "development"})`);
-  if (!IS_PROD) {
-    console.log(`Gemini API key: ${process.env.GEMINI_API_KEY ? "loaded" : "missing"}`);
-    console.log(`WhoisXML API key: ${process.env.WHOISXML_API_KEY ? "loaded" : "missing"}`);
-  }
+function scheduleBatchEnrich() {
+  if (String(process.env.ENABLE_BATCH_ENRICH || "").trim() !== "1") return;
+  const ms = Math.max(3600_000, Number(process.env.BATCH_ENRICH_INTERVAL_MS || 21_600_000));
+  setInterval(() => {
+    (async () => {
+      for (const uid of Object.keys(userSessions)) {
+        const days = userSessions[uid];
+        if (!days) continue;
+        try {
+          await enrichSessionDaysWithIab(days);
+          await persistence.persistUser(uid, days, userProfiles[uid] || {}, userVisitLogs[uid] || []);
+        } catch (e) {
+          console.error("batch enrich", uid, e?.message || e);
+        }
+      }
+    })();
+  }, ms);
+  console.log(`Batch IAB enrich scheduled every ${ms}ms`);
+}
+
+async function start() {
+  await persistence.loadIntoGlobals({ userSessions, userProfiles, userVisitLogs });
+  app.listen(PORT, () => {
+    console.log(`Reclaim backend listening on port ${PORT} (NODE_ENV=${process.env.NODE_ENV || "development"})`);
+    console.log(`Persistence: ${persistence.isPersistenceEnabled() ? "postgres" : "memory"}`);
+    if (!IS_PROD) {
+      console.log(`Gemini API key: ${process.env.GEMINI_API_KEY ? "loaded" : "missing"}`);
+      console.log(`WhoisXML API key: ${process.env.WHOISXML_API_KEY ? "loaded" : "missing"}`);
+    }
+    scheduleBatchEnrich();
+  });
+}
+
+start().catch((err) => {
+  console.error("Failed to start:", err);
+  process.exit(1);
 });

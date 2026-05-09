@@ -35,7 +35,7 @@ Large brokers often combine many feeds (panels, partnerships, resale markets). S
 | Dashboard Frontend | React + Vite (localhost:5173) |
 | Backend | Node.js + Express 5 (localhost:3000) |
 | AI | Google Gemini API (gemini-2.5-flash) |
-| Database | PostgreSQL (**next milestone** — backend still in-memory for dev/demo) |
+| Database | PostgreSQL (**optional durability shipped**; Postgres-first migration track next) |
 | Blockchain | Ethereum/Solana + MetaMask (planned — Sepolia testnet for demo) |
 | Hosting | AWS / Google Cloud (planned) |
 
@@ -108,6 +108,8 @@ Common ways to create it:
 ---
 
 ## Data Architecture
+
+**Canonical roadmap:** See `DATA_PIPELINE_ROADMAP.md` for the “quality before acquisition” pipeline plan and the Postgres migration track.
 
 ### What the Extension Captures Per Page Visit
 
@@ -240,7 +242,7 @@ A production-grade content script injected into every page via Manifest v3 `cont
 
 ### 6. Extension Popup UI ✅
 - Logged-out / logged-in views, Google sign-in via background `SIGN_IN`
-- Earnings, category bars, AI insight (`POST /api/insight` — currently hardcoded `http://localhost:3000` in one call site)
+- Earnings, category bars, AI insight (popup calls background worker; background calls `POST /api/insight` using `BACKEND_URL`)
 - **Dashboard** button → `chrome.runtime.sendMessage({ type: "OPEN_USER_DASHBOARD" })` (tab open/focus handled in background; optional `chrome.storage.local.reclaimDashboardUserUrl` override)
 
 ### 7. Extension Icons ✅
@@ -272,9 +274,9 @@ A production-grade content script injected into every page via Manifest v3 `cont
 | GET | `/api/company/custom-pricing` | Base + per-module USD + export column names |
 | GET | `/api/company/download/:purchaseId` | Download export |
 | POST | `/api/insight` | Short Gemini insight from summary |
-| GET | `/api/health` | Liveness (`{ "status": "ok" }` only) |
+| GET | `/api/health` | Liveness + pipeline status (persistence mode + enrichment version + DB health) |
 
-**Storage:** in-memory maps for users, sessions, companies, purchases (resets on server restart).
+**Storage:** in-memory maps for users, sessions, companies, purchases, plus **optional Postgres durability** when `DATABASE_URL` is set (loads on startup, persists after `/api/sync`).
 
 **Security / deployment (summary):**
 
@@ -420,7 +422,7 @@ Some packages and custom modules export raw `*_search_queries`. In addition, exp
 ## What Has To Be Done (Priority Order)
 
 ### Priority 1 — Ship-ready infra (in progress / next)
-- **PostgreSQL** — replace in-memory `users` / `userSessions` / `userVisitLogs` / companies / purchases; migrations; seed data for demos.
+- **PostgreSQL migration (next)** — move from in-memory + `reclaim_sync` snapshot storage to Postgres-first ingest + rollups (see `DATA_PIPELINE_ROADMAP.md` “Postgres-first migration track”).
 - **Chrome Web Store** — packaged MV3 extension, listing copy, privacy policy, permissions justification; move teams off “Load unpacked” for judges/users.
 - **Rate limiting** — protect Gemini and auth endpoints
 - **Deploy** — align `BACKEND_URL` / `BACKEND` / `manifest.json` host permissions / `COMPANY_OAUTH_REDIRECT_URL` / `COMPANY_DASHBOARD_ORIGIN` with real hosts (see root `README.md`)
@@ -453,7 +455,7 @@ Some packages and custom modules export raw `*_search_queries`. In addition, exp
 | `/user` still requires extension + bridge (or external messaging) in dev; no server-backed “demo user” session yet | `dashboard/src/pages/UserDashboard.jsx` | Medium | Open |
 | No error boundary in React dashboard | `dashboard/src/App.jsx` | Low | Open |
 | API rate limits + AI-specific limiter; registry batch limiter | `backend/server.js` | Medium | Mitigated (tune for prod) |
-| `popup.js` hardcodes `http://localhost:3000` for `/api/insight` | `extension/popup/popup.js` | Low | Open |
+| Postgres-first ingest + rollups (exports should never full-scan raw sessions) | `backend/*` | High | Planned (see `DATA_PIPELINE_ROADMAP.md`) |
 | Extension offline / backend down — partial error messaging only | `extension/*` | Low | Open |
 | `/api/categorize` legacy | `backend/server.js` | Low | Superseded by `/api/extract` |
 | Extract cache in `chrome.storage.local` | `extension/background.js` | — | ✅ Mitigates quota burst |
